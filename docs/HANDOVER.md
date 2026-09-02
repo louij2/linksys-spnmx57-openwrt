@@ -24,12 +24,21 @@ Qualcomm QCA8084 90000.mdio-1:00: probe failed with error -22
 A description problem, not a missing driver. IPQ5018 is already a supported
 OpenWrt target, so no SoC bring-up is needed. This is DTS work.
 
-**THE KEY FINDING SO FAR** (in `docs/investigation.md`): this is *not* the
-SPNMX56 with a tweak. The 56 has a QCA8337 five-port switch **plus** a separate
-QCA8081 2.5G PHY at 0x1c. The 57 fails on a **QCA8084** — a quad PHY that
-integrates both — declared at address **00**. The topology differs, so the DTS
-needs re-describing rather than patching. `dts/ipq5018-spnmx56.dts` is in the
-repo as the base to work from.
+**WHERE IT ACTUALLY STANDS (2026-09-02).** The `-22` is root caused and the
+hardware is confirmed from the vendor's own device tree, which was extracted
+from the public stock OEM image with no hardware access at all. Read
+`docs/hardware.md`, `docs/investigation.md` and `docs/bench-test.md`.
+
+Short version: one SoC MAC on a forced 2.5G SGMII+ link to a **QCA8386
+switch**, whose four ports carry QCA8084 EPHYs at MDIO addresses **1, 2, 3, 4**.
+Nothing at `0x1c` and nothing at `00`. Two bugs share the `-22`: a missing
+`ethernet-phy-package` container, and a clock parent liveness violation.
+
+The real blocker is that **mainline has no QCA8386 switch driver**, so the best
+realistic outcome is one interface with the four sockets behind it as a dumb
+switch, and only if the QCA8386 defaults to forwarding. Unverified.
+
+`dts/ipq5018-spnmx57.dts` is a candidate that has never been booted.
 
 **MY SETUP:**
 - I have **more than one of these routers**, and only one is flashed. **The other
@@ -43,20 +52,21 @@ repo as the base to work from.
 - I am on a Mac. `dtc` may need installing (`brew install dtc`).
 
 **START HERE, in this order:**
-1. Get ground truth. Run `scripts/collect.sh` on the flashed unit over Wi-Fi and
-   commit the output to `collected/`. The valuable parts are `/sys/firmware/fdt`
-   (the exact tree the kernel booted with) and `/sys/bus/mdio_bus/devices/`
-   (which PHYs really enumerated, at which addresses).
-2. Establish what the hardware actually is: chip markings on the board while it
-   is open for UART, plus the MDIO scan. Confirm QCA8084 versus 8337+8081 before
-   writing anything.
-3. Look for a Linksys **GPL source dump for the 57**. One exists for the 56
-   (`domenpk/Linksys_SPNMX56TB_v1.0.1.216589`). If a 57 equivalent exists, its
-   device tree answers everything.
-4. Only then write the DTS: switch node, PHY address, MDIO bus structure, GMAC
-   modes, port mapping.
-5. Test with UART attached, from RAM if U-Boot allows it.
-6. Post the result back to the thread either way. Someone there asked whether
+1. `docs/bench-test.md`. One MDIO read on the serial console decides whether
+   the device tree work is sufficient or whether the driver needs reordering as
+   well. It needs no build. Also confirm whether U-Boot has `tftpboot` and
+   `bootm`, so candidates can be booted from RAM and never flashed.
+2. Run `scripts/collect.sh` on the flashed unit over Wi-Fi and commit the
+   output. Still worth having, mainly for `DISTRIB_TARGET` (which tree the
+   image was built from) and the current `/sys/firmware/fdt`.
+3. Backport the mainline QCA8084 series (patches 0301-0312 in `qualcommbe`) and
+   set `CONFIG_IPQ_NSSCC_QCA8K=y`, then build `dts/ipq5018-spnmx57.dts`.
+4. Boot it from RAM and read the log. Work the `[GUESS]` markers in the DTS in
+   the order they are flagged; `qcom,package-mode` is the likeliest to be wrong.
+5. Establish whether the QCA8386 forwards by default. This is the thing that
+   decides whether any of it produces working Ethernet.
+6. Post the result back to the thread either way, and reply to Hyndland's
+   request for a serial confirm specifically. Someone there asked whether
    anyone had tried an LLM on this, so a clean write-up is worth something even
    if we fail.
 
