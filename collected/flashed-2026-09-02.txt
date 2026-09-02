@@ -1,0 +1,768 @@
+
+===== identity =====
+Linksys SPNMX56
+linksys,spnmx56
+OpenWrt SNAPSHOT r31810-05feabfd09 qualcommax/ipq50xx
+Linux OpenWrt 6.12.57 #0 SMP Thu Nov 13 13:24:38 2025 aarch64 GNU/Linux
+init=/sbin/init rootfstype=squashfs ubi.mtd=alt_rootfs root=mtd:squashfs rootwait root=/dev/ubiblock0_0 coherent_pool=2M
+
+===== the ethernet failure =====
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x51af8014]
+[    0.000000] psci: probing for conduit method from DT.
+[    0.015306] CPU features: emulated: Privileged Access Never (PAN) using TTBR0_EL1 switching
+[    0.038922] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.039063] /soc@0/clock-controller@1800000: Fixed dependency cycle(s) with /soc@0/phy@86000
+[    0.039525] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.043281] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.043383] /soc@0/clock-controller@1800000: Fixed dependency cycle(s) with /soc@0/phy@86000
+[    0.083663] clocksource: Switched to clocksource arch_sys_counter
+[    1.847650] mdio_bus 90000.mdio-1: MDIO device at address 0 is missing.
+[    1.847848] mdio_bus 90000.mdio-1: MDIO device at address 1 is missing.
+[    1.853207] mdio_bus 90000.mdio-1: MDIO device at address 2 is missing.
+[    1.859840] mdio_bus 90000.mdio-1: MDIO device at address 3 is missing.
+[    1.866436] mdio_bus 90000.mdio-1: MDIO device at address 4 is missing.
+[    1.888633] qca8k 90000.mdio-1:11: Switch id detected 17 but expected 13
+[    5.924794] ssdk_phy_driver_init[341]:INFO:dev_id = 0, phy_adress = 284, phy_id = 0xfffafffa phytype doesn't match
+[    6.257721] regi_init[2548]:INFO:Initializing SCOMPHY Done!!
+[    6.257927] regi_init[2574]:INFO:qca-ssdk module init succeeded!
+[    6.266553] nss-dp 39c00000.dp1 (unnamed net_device) (uninitialized): nss_dp_gmac: Registering netdev eth%d(qcom-id:1) with GMAC, mac_base: 0xffffffc081ba0000
+[    6.335755] Qualcomm Atheros IPQ5018 internal PHY 88000.mdio-1:07: attached PHY driver (mii_bus:phy_addr=88000.mdio-1:07, irq=POLL)
+[    6.415671] Qualcomm QCA8081 90000.mdio-1:1c: attached PHY driver (mii_bus:phy_addr=90000.mdio-1:1c, irq=POLL)
+[   12.129610] mount_root: switching to ubifs overlay
+[   17.969362] ath11k c000000.wifi: fw_version 0x270206d0 fw_build_timestamp 2022-08-04 13:28 fw_build_id WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+[   27.071397] br-lan: port 1(phy0-ap0) entered blocking state
+[   27.071479] br-lan: port 1(phy0-ap0) entered disabled state
+[   27.076207] ath11k c000000.wifi phy0-ap0: entered allmulticast mode
+[   27.082234] ath11k c000000.wifi phy0-ap0: entered promiscuous mode
+[   27.379647] br-lan: port 1(phy0-ap0) entered blocking state
+[   27.379728] br-lan: port 1(phy0-ap0) entered forwarding state
+[   28.615818] br-lan: port 2(phy1-ap0) entered blocking state
+[   28.615898] br-lan: port 2(phy1-ap0) entered disabled state
+[   28.624096] ath11k_pci 0000:01:00.0 phy1-ap0: entered allmulticast mode
+[   28.626623] ath11k_pci 0000:01:00.0 phy1-ap0: entered promiscuous mode
+[   28.632937] br-lan: port 2(phy1-ap0) entered blocking state
+[   28.639024] br-lan: port 2(phy1-ap0) entered forwarding state
+[   28.645212] br-lan: port 2(phy1-ap0) entered disabled state
+[   33.253252] phy1-sta0: authenticate with AA:BB:CC:DD:EE:FF (local address=02:11:22:33:44:22)
+[   33.253335] phy1-sta0: send auth to AA:BB:CC:DD:EE:FF (try 1/3)
+[   33.263915] phy1-sta0: authenticated
+[   33.273794] phy1-sta0: associate with AA:BB:CC:DD:EE:FF (try 1/3)
+[   33.277006] phy1-sta0: RX AssocResp from AA:BB:CC:DD:EE:FF (capab=0x1511 status=0 aid=1)
+[   33.285298] phy1-sta0: associated
+[   33.325603] phy1-sta0: Limiting TX power to 23 (23 - 0) dBm as advertised by AA:BB:CC:DD:EE:FF
+[   33.480614] br-lan: port 2(phy1-ap0) entered blocking state
+[   33.480682] br-lan: port 2(phy1-ap0) entered forwarding state
+
+===== full boot log =====
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x51af8014]
+[    0.000000] Linux version 6.12.57 (builder@buildhost) (aarch64-openwrt-linux-musl-gcc (OpenWrt GCC 14.3.0 r31810-05feabfd09) 14.3.0, GNU ld (GNU Binutils) 2.44) #0 SMP Thu Nov 13 13:24:38 2025
+[    0.000000] Machine model: Linksys SPNMX56
+[    0.000000] OF: reserved mem: 0x000000004a400000..0x000000004a7fffff (4096 KiB) nomap non-reusable tz_apps@4a400000
+[    0.000000] OF: reserved mem: 0x000000004a800000..0x000000004a9fffff (2048 KiB) nomap non-reusable bootloader@4a800000
+[    0.000000] OF: reserved mem: 0x000000004ab00000..0x000000004abfffff (1024 KiB) nomap non-reusable smem@4ab00000
+[    0.000000] OF: reserved mem: 0x000000004ac00000..0x000000004adfffff (2048 KiB) nomap non-reusable tz@4ac00000
+[    0.000000] OF: reserved mem: 0x000000004b000000..0x000000004dffffff (49152 KiB) nomap non-reusable q6_mem_regions@4b000000
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000040000000-0x000000005fffffff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000040000000-0x000000004a3fffff]
+[    0.000000]   node   0: [mem 0x000000004a400000-0x000000004a9fffff]
+[    0.000000]   node   0: [mem 0x000000004aa00000-0x000000004aafffff]
+[    0.000000]   node   0: [mem 0x000000004ab00000-0x000000004adfffff]
+[    0.000000]   node   0: [mem 0x000000004ae00000-0x000000004affffff]
+[    0.000000]   node   0: [mem 0x000000004b000000-0x000000004dffffff]
+[    0.000000]   node   0: [mem 0x000000004e000000-0x000000005fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000040000000-0x000000005fffffff]
+[    0.000000] psci: probing for conduit method from DT.
+[    0.000000] psci: PSCIv1.0 detected in firmware.
+[    0.000000] psci: Using standard PSCI v0.2 function IDs
+[    0.000000] psci: MIGRATE_INFO_TYPE not supported.
+[    0.000000] psci: SMC Calling Convention v1.0
+[    0.000000] psci: OSI mode supported.
+[    0.000000] psci: [Firmware Bug]: failed to set PC mode: -1
+[    0.000000] percpu: Embedded 20 pages/cpu s43288 r8192 d30440 u81920
+[    0.000000] pcpu-alloc: s43288 r8192 d30440 u81920 alloc=20*4096
+[    0.000000] pcpu-alloc: [0] 0 [0] 1 
+[    0.000000] Detected VIPT I-cache on CPU0
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: init=/sbin/init rootfstype=squashfs ubi.mtd=alt_rootfs root=mtd:squashfs rootwait root=/dev/ubiblock0_0 coherent_pool=2M
+[    0.000000] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 131072
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 0MB
+[    0.000000] software IO TLB: area num 2.
+[    0.000000] software IO TLB: mapped [mem 0x000000005f540000-0x000000005f5c0000] (0MB)
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=4 to nr_cpu_ids=2.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] Root IRQ handler: gic_handle_irq
+[    0.000000] GICv2m: range[mem 0x0b00a000-0x0b00aff7], SPI[448:479]
+[    0.000000] GICv2m: range[mem 0x0b00b000-0x0b00bff7], SPI[480:511]
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] arch_timer: cp15 and mmio timer(s) running at 24.00MHz (virt/virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x588fe9dc0, max_idle_ns: 440795202592 ns
+[    0.000003] sched_clock: 56 bits at 24MHz, resolution 41ns, wraps every 4398046511097ns
+[    0.000139] Calibrating delay loop (skipped), value calculated using timer frequency.. 48.00 BogoMIPS (lpj=240000)
+[    0.000159] pid_max: default: 32768 minimum: 301
+[    0.005294] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[    0.005317] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)
+[    0.012098] rcu: Hierarchical SRCU implementation.
+[    0.012114] rcu: 	Max phase no-delay instances is 1000.
+[    0.012719] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.013386] smp: Bringing up secondary CPUs ...
+[    0.014565] Detected VIPT I-cache on CPU1
+[    0.014712] CPU1: Booted secondary processor 0x0000000001 [0x51af8014]
+[    0.014945] smp: Brought up 1 node, 2 CPUs
+[    0.014966] SMP: Total of 2 processors activated.
+[    0.014970] CPU: All CPU(s) started at EL1
+[    0.014976] CPU features: detected: 32-bit EL0 Support
+[    0.014983] CPU features: detected: CRC32 instructions
+[    0.015061] alternatives: applying system-wide alternatives
+[    0.015306] CPU features: emulated: Privileged Access Never (PAN) using TTBR0_EL1 switching
+[    0.015560] Memory: 439084K/524288K available (9024K kernel code, 900K rwdata, 2828K rodata, 960K init, 304K bss, 83360K reserved, 0K cma-reserved)
+[    0.022809] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+[    0.022845] futex hash table entries: 512 (order: 3, 32768 bytes, linear)
+[    0.022981] 29216 pages in range for non-PLT usage
+[    0.022989] 520736 pages in range for PLT usage
+[    0.025211] pinctrl core: initialized pinctrl subsystem
+[    0.030218] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.031316] DMA: preallocated 2048 KiB GFP_KERNEL pool for atomic allocations
+[    0.031655] DMA: preallocated 2048 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.031971] DMA: preallocated 2048 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.032571] thermal_sys: Registered thermal governor 'step_wise'
+[    0.032790] cpuidle: using governor menu
+[    0.033168] ASID allocator initialised with 65536 entries
+[    0.038922] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.039063] /soc@0/clock-controller@1800000: Fixed dependency cycle(s) with /soc@0/phy@86000
+[    0.039151] /soc@0/interrupt-controller@b000000: Fixed dependency cycle(s) with /soc@0/interrupt-controller@b000000
+[    0.039525] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.043281] /soc@0/phy@86000: Fixed dependency cycle(s) with /soc@0/clock-controller@1800000
+[    0.043383] /soc@0/clock-controller@1800000: Fixed dependency cycle(s) with /soc@0/phy@86000
+[    0.079904] SCSI subsystem initialized
+[    0.080236] usbcore: registered new interface driver usbfs
+[    0.080304] usbcore: registered new interface driver hub
+[    0.080417] usbcore: registered new device driver usb
+[    0.080813] qcom_scm: convention: smc arm 64
+[    0.083663] clocksource: Switched to clocksource arch_sys_counter
+[    0.088043] NET: Registered PF_INET protocol family
+[    0.088325] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)
+[    0.091181] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[    0.091227] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[    0.091250] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[    0.091303] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)
+[    0.091487] TCP: Hash tables configured (established 4096 bind 4096)
+[    0.092079] MPTCP token hash table entries: 512 (order: 1, 12288 bytes, linear)
+[    0.092317] UDP hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.092349] UDP-Lite hash table entries: 256 (order: 1, 8192 bytes, linear)
+[    0.092833] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.092896] PCI: CLS 0 bytes, default 64
+[    0.095693] workingset: timestamp_bits=46 max_order=17 bucket_order=0
+[    0.096733] squashfs: version 4.0 (2009/01/31) Phillip Lougher
+[    0.096762] jffs2: version 2.2 (NAND) (SUMMARY) (LZMA) (RTIME) (CMODE_PRIORITY) (c) 2001-2006 Red Hat, Inc.
+[    0.100054] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 248)
+[    0.111568] qcom-pcie a0000000.pcie: host bridge /soc@0/pcie@a0000000 ranges:
+[    0.111668] qcom-pcie a0000000.pcie:       IO 0x00a0200000..0x00a02fffff -> 0x0000000000
+[    0.111709] qcom-pcie a0000000.pcie:      MEM 0x00a0300000..0x00b02fffff -> 0x00a0300000
+[    0.120123] Serial: 8250/16550 driver, 16 ports, IRQ sharing enabled
+[    0.128193] msm_serial 78af000.serial: msm_serial: detected port #0
+[    0.128370] msm_serial 78af000.serial: uartclk = 1843199
+[    0.129171] 78af000.serial: ttyMSM0 at MMIO 0x78af000 (irq = 21, base_baud = 115199) is a MSM
+[    0.129331] msm_serial: console setup on port #0
+[    0.129414] printk: legacy console [ttyMSM0] enabled
+[    0.245231] qcom-pcie a0000000.pcie: iATU: unroll T, 8 ob, 8 ib, align 4K, limit 1024G
+[    0.249639] msm_serial: driver initialized
+[    0.363690] qcom-pcie a0000000.pcie: PCIe Gen.2 x2 link up
+[    0.946546] qcom-pcie a0000000.pcie: PCI host bridge to bus 0000:00
+[    0.951530] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.957732] pci_bus 0000:00: root bus resource [io  0x0000-0xfffff]
+[    0.963232] pci_bus 0000:00: root bus resource [mem 0xa0300000-0xb02fffff]
+[    0.969503] pci 0000:00:00.0: [17cb:1004] type 01 class 0x060400 PCIe Root Port
+[    0.976386] pci 0000:00:00.0: BAR 0 [mem 0x00000000-0x00000fff]
+[    0.983552] pci 0000:00:00.0: PCI bridge to [bus 01-ff]
+[    0.989465] pci 0000:00:00.0:   bridge window [io  0x0000-0x0fff]
+[    0.994669] pci 0000:00:00.0:   bridge window [mem 0x00000000-0x000fffff]
+[    1.000910] pci 0000:00:00.0:   bridge window [mem 0x00000000-0x000fffff 64bit pref]
+[    1.007755] pci 0000:00:00.0: PME# supported from D0 D3hot D3cold
+[    1.018799] pci 0000:01:00.0: [17cb:1104] type 00 class 0x028000 PCIe Endpoint
+[    1.021580] pci 0000:01:00.0: BAR 0 [mem 0x00000000-0x001fffff 64bit]
+[    1.029255] pci 0000:01:00.0: PME# supported from D0 D3hot D3cold
+[    1.035298] pci 0000:01:00.0: 8.000 Gb/s available PCIe bandwidth, limited by 5.0 GT/s PCIe x2 link at 0000:00:00.0 (capable of 15.752 Gb/s with 8.0 GT/s PCIe x2 link)
+[    1.041888] pci 0000:00:00.0: bridge window [mem 0xa0400000-0xa05fffff]: assigned
+[    1.055981] pci 0000:00:00.0: BAR 0 [mem 0xa0300000-0xa0300fff]: assigned
+[    1.063593] pci 0000:01:00.0: BAR 0 [mem 0xa0400000-0xa05fffff 64bit]: assigned
+[    1.070420] pci 0000:00:00.0: PCI bridge to [bus 01-ff]
+[    1.077501] pci 0000:00:00.0:   bridge window [mem 0xa0400000-0xa05fffff]
+[    1.082682] pci_bus 0000:00: resource 4 [io  0x0000-0xfffff]
+[    1.089646] pci_bus 0000:00: resource 5 [mem 0xa0300000-0xb02fffff]
+[    1.095364] pci_bus 0000:01: resource 1 [mem 0xa0400000-0xa05fffff]
+[    1.105141] pcieport 0000:00:00.0: PME: Signaling with IRQ 23
+[    1.108908] pcieport 0000:00:00.0: AER: enabled with IRQ 23
+[    1.123261] loop: module loaded
+[    1.130577] spi-nand spi0.0: GigaDevice SPI NAND was found.
+[    1.130628] spi-nand spi0.0: 512 MiB, block size: 128 KiB, page size: 2048, OOB size: 128
+[    1.136019] 18 fixed-partitions partitions found on MTD device spi0.0
+[    1.143314] Creating 18 MTD partitions on "spi0.0":
+[    1.149831] 0x000000000000-0x000000080000 : "0:SBL1"
+[    1.157011] 0x000000080000-0x000000100000 : "0:MIBIB"
+[    1.162333] 0x000000100000-0x000000200000 : "0:QSEE"
+[    1.168014] 0x000000200000-0x000000240000 : "0:DEVCFG"
+[    1.171369] 0x000000240000-0x000000280000 : "0:CDT"
+[    1.176599] 0x000000280000-0x000000300000 : "0:APPSBLENV"
+[    1.181268] 0x000000300000-0x000000440000 : "0:APPSBL"
+[    1.188584] 0x000000440000-0x000000540000 : "0:ART"
+[    1.193169] 0x000000540000-0x0000005c0000 : "0:TRAINING"
+[    1.197105] 0x0000005c0000-0x000000640000 : "u_env"
+[    1.202475] 0x000000640000-0x000000680000 : "s_env"
+[    1.206579] 0x000000680000-0x0000006c0000 : "devinfo"
+[    1.211798] 0x0000006c0000-0x0000058c0000 : "kernel"
+[    1.378624] 0x000000ec0000-0x0000058c0000 : "rootfs"
+[    1.379903] mtd: setting mtd13 (rootfs) as root device
+[    1.383415] mtdsplit: no squashfs found in "rootfs"
+[    1.387713] 0x0000058c0000-0x00000aac0000 : "alt_kernel"
+[    1.558404] 0x0000060c0000-0x00000aac0000 : "alt_rootfs"
+[    1.559756] 0x00000aac0000-0x00000acc0000 : "sysdiag"
+[    1.568260] 0x00000acc0000-0x00000f0c0000 : "syscfg"
+[    1.847650] mdio_bus 90000.mdio-1: MDIO device at address 0 is missing.
+[    1.847848] mdio_bus 90000.mdio-1: MDIO device at address 1 is missing.
+[    1.853207] mdio_bus 90000.mdio-1: MDIO device at address 2 is missing.
+[    1.859840] mdio_bus 90000.mdio-1: MDIO device at address 3 is missing.
+[    1.866436] mdio_bus 90000.mdio-1: MDIO device at address 4 is missing.
+[    1.888633] qca8k 90000.mdio-1:11: Switch id detected 17 but expected 13
+[    1.888811] i2c_dev: i2c /dev entries driver
+[    1.899281] sdhci: Secure Digital Host Controller Interface driver
+[    1.899339] sdhci: Copyright(c) Pierre Ossman
+[    1.904740] sdhci-pltfm: SDHCI platform and OF driver helper
+[    1.912649] remoteproc remoteproc0: releasing cd00000.remoteproc
+[    1.997542] NET: Registered PF_INET6 protocol family
+[    1.999907] Segment Routing with IPv6
+[    2.001670] In-situ OAM (IOAM) with IPv6
+[    2.005312] NET: Registered PF_PACKET protocol family
+[    2.009192] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[    2.014791] 8021q: 802.1Q VLAN Support v1.8
+[    2.084468] cpufreq: cpufreq_online: CPU0: Running at unlisted initial frequency: 799999 KHz, changing to: 800000 KHz
+[    2.089029] remoteproc remoteproc0: cd00000.remoteproc is available
+[    2.094340] qcom-q6-mpd cd00000.remoteproc: pd-1 node found
+[    2.101986] remoteproc remoteproc1: pd-1 is available
+[    2.107668] ubi0: attaching mtd15
+[    2.835996] ubi0: scanning is finished
+[    2.885077] ubi0: attached mtd15 (name "alt_rootfs", size 74 MiB)
+[    2.885156] ubi0: PEB size: 131072 bytes (128 KiB), LEB size: 126976 bytes
+[    2.890193] ubi0: min./max. I/O unit sizes: 2048/2048, sub-page size 2048
+[    2.897019] ubi0: VID header offset: 2048 (aligned 2048), data offset: 4096
+[    2.903841] ubi0: good PEBs: 592, bad PEBs: 0, corrupted PEBs: 0
+[    2.910591] ubi0: user volume: 2, internal volumes: 1, max. volumes count: 128
+[    2.916857] ubi0: max/mean erase counter: 2/1, WL threshold: 4096, image sequence number: 1763040278
+[    2.923895] ubi0: available PEBs: 0, total reserved PEBs: 592, PEBs reserved for bad PEB handling: 80
+[    2.933211] ubi0: background thread "ubi_bgt0d" started, PID 608
+[    2.944138] block ubiblock0_0: created from ubi0:0(rootfs)
+[    2.948583] clk: Disabling unused clocks
+[    2.963780] random: crng init done
+[    2.964681] VFS: Mounted root (squashfs filesystem) readonly on device 254:0.
+[    2.966589] Freeing unused kernel memory: 960K
+[    2.973367] Run /sbin/init as init process
+[    2.977681]   with arguments:
+[    2.977689]     /sbin/init
+[    2.977694]   with environment:
+[    2.977699]     HOME=/
+[    2.977704]     TERM=linux
+[    3.342310] init: Console is alive
+[    3.342707] init: - watchdog -
+[    4.212426] kmodloader: loading kernel modules from /etc/modules-boot.d/*
+[    4.336998] gpio_button_hotplug: loading out-of-tree module taints kernel.
+[    4.398471] ssdk_dt_parse_mac_mode[300]:INFO:mac mode1 doesn't exit!
+[    4.398526] ssdk_dt_parse_mac_mode[308]:INFO:mac mode2 doesn't exit!
+[    4.404133] ssdk_dt_parse_port_bmp[1064]:INFO:port_bmp doesn't exist!
+[    4.410265] ssdk_dt_parse_interrupt[942]:INFO:intr-gpio does not exist
+[    5.923682] ssdk_mp_reset_init[1311]:INFO:MP reset successfully!
+[    5.924794] ssdk_phy_driver_init[341]:INFO:dev_id = 0, phy_adress = 284, phy_id = 0xfffafffa phytype doesn't match
+[    6.257721] regi_init[2548]:INFO:Initializing SCOMPHY Done!!
+[    6.257927] regi_init[2574]:INFO:qca-ssdk module init succeeded!
+[    6.266553] nss-dp 39c00000.dp1 (unnamed net_device) (uninitialized): nss_dp_gmac: Registering netdev eth%d(qcom-id:1) with GMAC, mac_base: 0xffffffc081ba0000
+[    6.335755] Qualcomm Atheros IPQ5018 internal PHY 88000.mdio-1:07: attached PHY driver (mii_bus:phy_addr=88000.mdio-1:07, irq=POLL)
+[    6.339307] nss-dp 39d00000.dp2 wan (uninitialized): nss_dp_gmac: Registering netdev wan(qcom-id:2) with GMAC, mac_base: 0xffffffc081bd0000
+[    6.415671] Qualcomm QCA8081 90000.mdio-1:1c: attached PHY driver (mii_bus:phy_addr=90000.mdio-1:1c, irq=POLL)
+[    6.417917] **********************************************************
+[    6.424687] * NSS Data Plane driver
+[    6.431105] **********************************************************
+[    6.453117] kmodloader: done loading kernel modules from /etc/modules-boot.d/*
+[    6.455583] init: - preinit -
+[   11.798164] UBIFS (ubi0:1): Mounting in unauthenticated mode
+[   11.798473] UBIFS (ubi0:1): background thread "ubifs_bgt0_1" started, PID 766
+[   11.876382] UBIFS (ubi0:1): recovery needed
+[   12.078687] UBIFS (ubi0:1): recovery completed
+[   12.078871] UBIFS (ubi0:1): UBIFS: mounted UBI device 0, volume 1, name "rootfs_data"
+[   12.082057] UBIFS (ubi0:1): LEB size: 126976 bytes (124 KiB), min./max. I/O unit sizes: 2048 bytes/2048 bytes
+[   12.090010] UBIFS (ubi0:1): FS size: 52948992 bytes (50 MiB, 417 LEBs), max 427 LEBs, journal size 2666496 bytes (2 MiB, 21 LEBs)
+[   12.099876] UBIFS (ubi0:1): reserved for root: 2500911 bytes (2442 KiB)
+[   12.111499] UBIFS (ubi0:1): media format: w5/r0 (latest is w5/r0), UUID 31F0178C-5AC1-4D0B-8438-8662AEA41CBF, small LPT model
+[   12.129610] mount_root: switching to ubifs overlay
+[   12.140116] overlayfs: null uuid detected in lower fs '/', falling back to xino=off,index=off,nfs_export=off.
+[   12.156425] urandom-seed: Seeding with /etc/urandom.seed
+[   12.259485] procd: - early -
+[   12.259746] procd: - watchdog -
+[   12.918934] procd: - watchdog -
+[   12.923565] procd: - ubus -
+[   13.081323] procd: - init -
+[   14.395245] kmodloader: loading kernel modules from /etc/modules.d/*
+[   14.670423] urngd: v1.0.2 started.
+[   14.785107] Loading modules backported from Linux version v6.16-0-g038d61fd6422
+[   14.785158] Backport generated by backports.git v6.1.145-1-47-g6194bf852a3e
+[   14.818370] NET: Registered PF_QIPCRTR protocol family
+[   15.113532] PPP generic driver version 2.4.2
+[   15.116312] NET: Registered PF_PPPOX protocol family
+[   15.192465] ath11k c000000.wifi: ipq5018 hw1.0
+[   15.192521] ath11k c000000.wifi: FW memory mode: 1
+[   15.285236] remoteproc remoteproc1: powering up pd-1
+[   15.303912] remoteproc remoteproc1: Booting fw image ath11k/IPQ5018/hw1.0/q6_fw.mdt, size 1820
+[   15.303999] remoteproc remoteproc0: powering up cd00000.remoteproc
+[   15.311464] remoteproc remoteproc0: Booting fw image ath11k/IPQ5018/hw1.0/q6_fw.mdt, size 1820
+[   17.905314] remoteproc remoteproc0: remote processor cd00000.remoteproc is now up
+[   17.925518] remoteproc remoteproc1: remote processor pd-1 is now up
+[   17.933182] ath11k_pci 0000:01:00.0: BAR 0 [mem 0xa0400000-0xa05fffff 64bit]: assigned
+[   17.933312] ath11k_pci 0000:01:00.0: enabling device (0000 -> 0002)
+[   17.941317] ath11k_pci 0000:01:00.0: MSI vectors: 16
+[   17.946474] ath11k_pci 0000:01:00.0: qcn9074 hw1.0
+[   17.951433] ath11k_pci 0000:01:00.0: FW memory mode: 2
+[   17.958416] ath11k c000000.wifi: qmi fail to get qcom,m3-dump-addr, ignore m3 dump mem req
+[   17.967988] ath11k c000000.wifi: chip_id 0x0 chip_family 0x4 board_id 0xff soc_id 0xffffffff
+[   17.969362] ath11k c000000.wifi: fw_version 0x270206d0 fw_build_timestamp 2022-08-04 13:28 fw_build_id WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+[   18.206002] mhi mhi0: Requested to power ON
+[   18.206092] mhi mhi0: Power on setup success
+[   19.623766] mhi mhi0: Wait for device to enter SBL or Mission mode
+[   19.704017] kmodloader: done loading kernel modules from /etc/modules.d/*
+[   19.721868] ath11k_pci 0000:01:00.0: chip_id 0x0 chip_family 0x0 board_id 0xff soc_id 0xffffffff
+[   19.721928] ath11k_pci 0000:01:00.0: fw_version 0x290b8862 fw_build_timestamp 2024-09-23 10:51 fw_build_id 
+[   20.403340] ath11k_pci 0000:01:00.0: htt event 48 not handled
+[   27.071397] br-lan: port 1(phy0-ap0) entered blocking state
+[   27.071479] br-lan: port 1(phy0-ap0) entered disabled state
+[   27.076207] ath11k c000000.wifi phy0-ap0: entered allmulticast mode
+[   27.082234] ath11k c000000.wifi phy0-ap0: entered promiscuous mode
+[   27.379647] br-lan: port 1(phy0-ap0) entered blocking state
+[   27.379728] br-lan: port 1(phy0-ap0) entered forwarding state
+[   28.615818] br-lan: port 2(phy1-ap0) entered blocking state
+[   28.615898] br-lan: port 2(phy1-ap0) entered disabled state
+[   28.624096] ath11k_pci 0000:01:00.0 phy1-ap0: entered allmulticast mode
+[   28.626623] ath11k_pci 0000:01:00.0 phy1-ap0: entered promiscuous mode
+[   28.632937] br-lan: port 2(phy1-ap0) entered blocking state
+[   28.639024] br-lan: port 2(phy1-ap0) entered forwarding state
+[   28.645212] br-lan: port 2(phy1-ap0) entered disabled state
+[   33.253252] phy1-sta0: authenticate with AA:BB:CC:DD:EE:FF (local address=02:11:22:33:44:22)
+[   33.253335] phy1-sta0: send auth to AA:BB:CC:DD:EE:FF (try 1/3)
+[   33.263915] phy1-sta0: authenticated
+[   33.273794] phy1-sta0: associate with AA:BB:CC:DD:EE:FF (try 1/3)
+[   33.277006] phy1-sta0: RX AssocResp from AA:BB:CC:DD:EE:FF (capab=0x1511 status=0 aid=1)
+[   33.285298] phy1-sta0: associated
+[   33.325603] phy1-sta0: Limiting TX power to 23 (23 - 0) dBm as advertised by AA:BB:CC:DD:EE:FF
+[   33.480614] br-lan: port 2(phy1-ap0) entered blocking state
+[   33.480682] br-lan: port 2(phy1-ap0) entered forwarding state
+
+===== MDIO bus -- what is ACTUALLY on it =====
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 88000.mdio-1:07 -> ../../../devices/platform/soc@0/88000.mdio/mdio_bus/88000.mdio-1/88000.mdio-1:07
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 90000.mdio-1:11 -> ../../../devices/platform/soc@0/90000.mdio/mdio_bus/90000.mdio-1/90000.mdio-1:11
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 90000.mdio-1:1c -> ../../../devices/platform/soc@0/90000.mdio/mdio_bus/90000.mdio-1/90000.mdio-1:1c
+/sys/bus/mdio_bus/devices/88000.mdio-1:07/
+   phy_id         0x004dd0c0 
+   phy_interface  internal 
+   uevent         DEVTYPE=PHY DRIVER=Qualcomm Atheros IPQ5018 internal PHY OF_NAME=ethernet-phy OF_FULLNAME=/soc@0/mdio@88000/ethernet-phy@7 OF_COMPATIBLE_0=ethernet-phy-id004d.d0c0 OF_COMPATIBLE_N=1 MODALIAS=of:Nethernet-phyT(null)Cethernet-phy-id004d.d0c0 
+/sys/bus/mdio_bus/devices/90000.mdio-1:11/
+   uevent         OF_NAME=ethernet-switch OF_FULLNAME=/soc@0/mdio@90000/ethernet-switch@17 OF_COMPATIBLE_0=qca,qca8337 OF_COMPATIBLE_N=1 MODALIAS=of:Nethernet-switchT(null)Cqca,qca8337 
+/sys/bus/mdio_bus/devices/90000.mdio-1:1c/
+   phy_id         0x004dd101 
+   phy_interface  sgmii 
+   uevent         DEVTYPE=PHY DRIVER=Qualcomm QCA8081 OF_NAME=ethernet-phy OF_FULLNAME=/soc@0/mdio@90000/ethernet-phy@28 OF_COMPATIBLE_0=ethernet-phy-id004d.d101 OF_COMPATIBLE_N=1 MODALIAS=of:Nethernet-phyT(null)Cethernet-phy-id004d.d101 
+
+===== WIFI -- is the internal 2.4GHz radio up, or only the PCIe one? =====
+phy#1
+	Interface phy1-sta0
+		ifindex 7
+		wdev 0x100000002
+		addr 02:11:22:33:44:22
+		ssid .Xboxlivenetwork
+		type managed
+		channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz
+		txpower 23.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+	Interface phy1-ap0
+		ifindex 6
+		wdev 0x100000001
+		addr 00:11:22:33:44:22
+		ssid .OpenWrt-5G
+		type AP
+		channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz
+		txpower 23.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	0	0	0	0	0	0		0
+phy#0
+	Interface phy0-ap0
+		ifindex 5
+		wdev 0x1
+		addr 00:11:22:33:44:21
+		ssid .OpenWrt
+		type AP
+		channel 1 (2412 MHz), width: 20 MHz, center1: 2412 MHz
+		txpower 26.00 dBm
+		multicast TXQ:
+			qsz-byt	qsz-pkt	flows	drops	marks	overlmt	hashcol	tx-bytes	tx-packets
+			0	0	241	0	0	0	0	112628		241
+--- phy count: 2 ---
+/sys/class/ieee80211/phy0  name=phy0  addr=00:11:22:33:44:21
+   device: /sys/devices/platform/soc@0/c000000.wifi
+/sys/class/ieee80211/phy1  name=phy1  addr=00:11:22:33:44:22
+   device: /sys/devices/platform/soc@0/a0000000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
+
+===== ath11k -- which firmware and which board file =====
+[   15.192465] ath11k c000000.wifi: ipq5018 hw1.0
+[   15.192521] ath11k c000000.wifi: FW memory mode: 1
+[   15.303912] remoteproc remoteproc1: Booting fw image ath11k/IPQ5018/hw1.0/q6_fw.mdt, size 1820
+[   15.311464] remoteproc remoteproc0: Booting fw image ath11k/IPQ5018/hw1.0/q6_fw.mdt, size 1820
+[   17.933182] ath11k_pci 0000:01:00.0: BAR 0 [mem 0xa0400000-0xa05fffff 64bit]: assigned
+[   17.933312] ath11k_pci 0000:01:00.0: enabling device (0000 -> 0002)
+[   17.941317] ath11k_pci 0000:01:00.0: MSI vectors: 16
+[   17.946474] ath11k_pci 0000:01:00.0: qcn9074 hw1.0
+[   17.951433] ath11k_pci 0000:01:00.0: FW memory mode: 2
+[   17.958416] ath11k c000000.wifi: qmi fail to get qcom,m3-dump-addr, ignore m3 dump mem req
+[   17.967988] ath11k c000000.wifi: chip_id 0x0 chip_family 0x4 board_id 0xff soc_id 0xffffffff
+[   17.969362] ath11k c000000.wifi: fw_version 0x270206d0 fw_build_timestamp 2022-08-04 13:28 fw_build_id WLAN.HK.2.7.0.1-01744-QCAHKSWPL_SILICONZ-1
+[   19.721868] ath11k_pci 0000:01:00.0: chip_id 0x0 chip_family 0x0 board_id 0xff soc_id 0xffffffff
+[   19.721928] ath11k_pci 0000:01:00.0: fw_version 0x290b8862 fw_build_timestamp 2024-09-23 10:51 fw_build_id 
+[   20.403340] ath11k_pci 0000:01:00.0: htt event 48 not handled
+[   27.076207] ath11k c000000.wifi phy0-ap0: entered allmulticast mode
+[   27.082234] ath11k c000000.wifi phy0-ap0: entered promiscuous mode
+[   28.624096] ath11k_pci 0000:01:00.0 phy1-ap0: entered allmulticast mode
+[   28.626623] ath11k_pci 0000:01:00.0 phy1-ap0: entered promiscuous mode
+drwxr-xr-x    1 root     root           224 Nov 13  2025 IPQ5018
+drwxr-xr-x    1 root     root           224 Nov 13  2025 QCN9074
+/lib/firmware/ath11k/IPQ5018/hw1.0/board-2.bin
+/lib/firmware/ath11k/QCN9074/hw1.0/board-2.bin
+
+===== PCIe -- which controller enumerated =====
+no lspci
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 0000:00:00.0 -> ../../../devices/platform/soc@0/a0000000.pcie/pci0000:00/0000:00:00.0
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 0000:01:00.0 -> ../../../devices/platform/soc@0/a0000000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0
+
+===== LEDs and buttons =====
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 blue:power -> ../../devices/platform/leds/leds/blue:power
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 green:power -> ../../devices/platform/leds/leds/green:power
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 red:power -> ../../devices/platform/leds/leds/red:power
+gpiochip0: GPIOs 512-558, parent: platform/1000000.pinctrl, 1000000.pinctrl:
+ gpio0   : in  low  func0 8mA pull down
+ gpio1   : in  high func2 8mA pull down
+ gpio2   : in  high func7 8mA pull down
+ gpio3   : in  low  func7 8mA pull down
+ gpio4   : in  high func2 8mA no pull
+ gpio5   : in  high func2 8mA no pull
+ gpio6   : in  low  func2 8mA no pull
+ gpio7   : in  high func2 8mA no pull
+ gpio8   : in  high func2 8mA no pull
+ gpio9   : in  low  func2 8mA no pull
+ gpio10  : out low  func1 2mA no pull
+ gpio11  : out low  func1 2mA no pull
+ gpio12  : in  low  func1 2mA no pull
+ gpio13  : out low  func1 2mA no pull
+ gpio14  : in  low  func0 8mA pull down
+ gpio15  : out high func0 2mA pull down
+ gpio16  : in  high func0 8mA pull down
+ gpio17  : in  low  func0 8mA pull down
+ gpio18  : in  low  func0 8mA pull down
+ gpio19  : in  low  func3 8mA pull down
+ gpio20  : in  low  func1 8mA no pull
+ gpio21  : in  high func1 8mA no pull
+ gpio22  : in  high func0 8mA pull down
+ gpio23  : in  low  func0 8mA pull down
+ gpio24  : out high func0 8mA pull down
+ gpio25  : in  low  func0 8mA pull down
+ gpio26  : in  low  func0 8mA pull down
+ gpio27  : in  high func0 8mA pull up
+ gpio28  : in  high func0 8mA pull up
+ gpio29  : in  low  func0 8mA pull down
+ gpio30  : in  low  func4 8mA pull down
+ gpio31  : in  low  func0 8mA pull down
+ gpio32  : in  high func0 8mA pull down
+ gpio33  : in  high func0 8mA pull down
+ gpio34  : in  high func0 8mA pull down
+ gpio35  : in  high func0 8mA pull down
+ gpio36  : in  low  func1 8mA pull up
+ gpio37  : in  high func1 8mA pull up
+ gpio38  : in  low  func0 8mA pull down
+
+===== MAC addresses -- label MACs or random? =====
+/sys/class/net/br-lan/address 00:11:22:33:44:21
+/sys/class/net/eth0/address  00:11:22:33:44:20
+/sys/class/net/lo/address    00:00:00:00:00:00
+/sys/class/net/phy0-ap0/address 00:11:22:33:44:21
+/sys/class/net/phy1-ap0/address 00:11:22:33:44:22
+/sys/class/net/phy1-sta0/address 02:11:22:33:44:22
+/sys/class/net/wan/address   00:11:22:33:44:20
+02 0000000000010000 HW_ID1
+SOC_HW_VERSION_PHYS_ADDR
+SOC_HW_VERSION_OFFSET
+SOC_HW_VERSION_PHYS_ADDR
+SOC_HW_VERSION_OFFSET
+HW_ID
+hw_mac_addr=00:11:22:33:44:20
+hw_revision=1
+hw_version=V01
+Mac 
+$hw_,
+BMac
+gcc_gmac0_cfg_clk
+gcc_gmac0_sys_clk
+gcc_gmac1_cfg_clk
+gcc_gmac1_sys_clk
+gcc_snoc_gmac0_ahb_clk
+gcc_snoc_gmac1_ahb_clk
+gcc_gmac0_ptp_clk
+gcc_gmac1_ptp_clk
+
+===== thermal =====
+/sys/class/thermal/thermal_zone0 ubi32-thermal 49000
+/sys/class/thermal/thermal_zone1 cpu-thermal 50000
+/sys/class/thermal/thermal_zone2 top-glue-thermal 49000
+/sys/class/thermal/thermal_zone3 gephy-thermal 50000
+
+===== network devices =====
+br-lan    Link encap:Ethernet  HWaddr 00:11:22:33:44:21  
+          inet6 addr: fe80::8269:1aff:fed5:f121/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:317 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:713 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:88431 (86.3 KiB)  TX bytes:243904 (238.1 KiB)
+
+eth0      Link encap:Ethernet  HWaddr 00:11:22:33:44:20  
+          BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+          Interrupt:38 
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:66 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:66 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:6409 (6.2 KiB)  TX bytes:6409 (6.2 KiB)
+
+phy0-ap0  Link encap:Ethernet  HWaddr 00:11:22:33:44:21  
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:325 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:926 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:93555 (91.3 KiB)  TX bytes:359704 (351.2 KiB)
+
+phy1-ap0  Link encap:Ethernet  HWaddr 00:11:22:33:44:22  
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:614 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:237069 (231.5 KiB)
+
+phy1-sta0 Link encap:Ethernet  HWaddr 02:11:22:33:44:22  
+          inet addr:10.0.0.68  Bcast:10.0.0.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:15389 errors:0 dropped:1627 overruns:0 frame:0
+          TX packets:199 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:2365135 (2.2 MiB)  TX bytes:18991 (18.5 KiB)
+
+wan       Link encap:Ethernet  HWaddr 00:11:22:33:44:20  
+          UP BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+          Interrupt:39 
+
+lrwxrwxrwx    1 root     root             0 Nov 20  2025 br-lan -> ../../devices/virtual/net/br-lan
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 eth0 -> ../../devices/platform/soc@0/39c00000.dp1/net/eth0
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 lo -> ../../devices/virtual/net/lo
+lrwxrwxrwx    1 root     root             0 Nov 20  2025 phy0-ap0 -> ../../devices/platform/soc@0/c000000.wifi/net/phy0-ap0
+lrwxrwxrwx    1 root     root             0 Nov 20  2025 phy1-ap0 -> ../../devices/platform/soc@0/a0000000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/net/phy1-ap0
+lrwxrwxrwx    1 root     root             0 Nov 20  2025 phy1-sta0 -> ../../devices/platform/soc@0/a0000000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0/net/phy1-sta0
+lrwxrwxrwx    1 root     root             0 Jan  1  1970 wan -> ../../devices/platform/soc@0/39d00000.dp2/net/wan
+
+===== DSA / switch =====
+no swconfig (expected on DSA)
+
+===== device tree the kernel booted with =====
+/sys/firmware/fdt present, 28672 bytes
+--- base64 below: decode to running.dtb and decompile with dtc ---
+
+===== flash layout and recovery options =====
+sh: uuencode: not found
+dev:    size   erasesize  name
+mtd0: 00080000 00020000 "0:SBL1"
+mtd1: 00080000 00020000 "0:MIBIB"
+mtd2: 00100000 00020000 "0:QSEE"
+mtd3: 00040000 00020000 "0:DEVCFG"
+mtd4: 00040000 00020000 "0:CDT"
+mtd5: 00080000 00020000 "0:APPSBLENV"
+mtd6: 00140000 00020000 "0:APPSBL"
+mtd7: 00100000 00020000 "0:ART"
+mtd8: 00080000 00020000 "0:TRAINING"
+mtd9: 00080000 00020000 "u_env"
+mtd10: 00040000 00020000 "s_env"
+mtd11: 00040000 00020000 "devinfo"
+mtd12: 05200000 00020000 "kernel"
+mtd13: 04a00000 00020000 "rootfs"
+mtd14: 05200000 00020000 "alt_kernel"
+mtd15: 04a00000 00020000 "alt_rootfs"
+mtd16: 00200000 00020000 "sysdiag"
+mtd17: 04400000 00020000 "syscfg"
+major minor  #blocks  name
+
+  31        0        512 mtdblock0
+  31        1        512 mtdblock1
+  31        2       1024 mtdblock2
+  31        3        256 mtdblock3
+  31        4        256 mtdblock4
+  31        5        512 mtdblock5
+  31        6       1280 mtdblock6
+  31        7       1024 mtdblock7
+  31        8        512 mtdblock8
+  31        9        512 mtdblock9
+  31       10        256 mtdblock10
+  31       11        256 mtdblock11
+  31       12      83968 mtdblock12
+  31       13      75776 mtdblock13
+  31       14      83968 mtdblock14
+  31       15      75776 mtdblock15
+  31       16       2048 mtdblock16
+  31       17      69632 mtdblock17
+ 254        0      10044 ubiblock0_0
+UBI version:                    1
+Count of UBI devices:           1
+UBI control device major/minor: 10:127
+Present UBI devices:            ubi0
+
+ubi0
+Volumes count:                           2
+Logical eraseblock size:                 126976 bytes, 124.0 KiB
+Total amount of logical eraseblocks:     592 (75169792 bytes, 71.6 MiB)
+Amount of available logical eraseblocks: 0 (0 bytes)
+Maximum count of volumes                 128
+Count of bad physical eraseblocks:       0
+Count of reserved physical eraseblocks:  80
+Current maximum erase counter value:     2
+Minimum input/output unit size:          2048 bytes
+Character device major/minor:            245:0
+Present volumes:                         0, 1
+
+Volume ID:   0 (on ubi0)
+Type:        dynamic
+Alignment:   1
+Size:        81 LEBs (10285056 bytes, 9.8 MiB)
+State:       OK
+Name:        rootfs
+Character device major/minor: 245:1
+-----------------------------------
+Volume ID:   1 (on ubi0)
+Type:        dynamic
+Alignment:   1
+Size:        427 LEBs (54218752 bytes, 51.7 MiB)
+State:       OK
+Name:        rootfs_data
+Character device major/minor: 245:2
+boot_ver=7.3.21
+bootargs=console=ttyMSM0,115200n8
+bootcmd=if test $auto_recovery = no; then bootipq; elif test $boot_part = 1; then run bootpart1; else run bootpart2; fi
+bootdelay=3
+bootpart1=setenv bootargs $partbootargs && nand read $loadaddr $prikern $kernsize && bootm $loadaddr
+bootpart2=setenv bootargs $partbootargs2 && nand read $loadaddr $altkern $kernsize && bootm $loadaddr
+flashimg=tftp $loadaddr $image && nand erase $prikern $imgsize && nand write $loadaddr $prikern $filesize
+flashimg2=tftp $loadaddr $image && nand erase $altkern $imgsize && nand write $loadaddr $altkern $filesize
+image=MX57.img
+mtdparts=mtdparts=nand0:0x4a00000@0xec0000(fs),
+partbootargs=init=/sbin/init rootfstype=squashfs ubi.mtd=rootfs root=mtd:squashfs rootwait
+partbootargs2=init=/sbin/init rootfstype=squashfs ubi.mtd=alt_rootfs root=mtd:squashfs rootwait
+boot_part_ready=3
+boot_part=2
+
+===== loaded modules =====
+ath11k                475136  2 ath11k_pci,ath11k_ahb
+ath11k_ahb             24576  0 
+ath11k_pci             20480  0 
+cfg80211              356352  2 ath11k,mac80211
+cmac                   12288  0 
+compat                 12288  4 ath11k_pci,ath11k_ahb,mac80211,cfg80211
+crc32c_generic         12288  1 
+crc_ccitt              12288  1 ppp_async
+drbg                   24576  0 
+dwc3                   49152  0 
+dwc3_qcom              16384  0 
+ext4                  458752  0 
+geniv                  12288  1 seqiv
+gpio_button_hotplug    16384  0 
+hmac                   12288  0 
+jbd2                   77824  1 ext4
+jitterentropy_rng      16384  0 
+leds_gpio              12288  0 
+libcrc32c              12288  1 nf_tables
+mac80211              684032  1 ath11k
+mbcache                12288  1 ext4
+mhi                    65536  2 ath11k_pci,qrtr_mhi
+michael_mic            12288  2 
+nf_conntrack           94208  7 nft_redir,nft_nat,nft_masq,nft_flow_offload,nft_ct,nf_nat,nf_flow_table
+nf_defrag_ipv4         12288  1 nf_conntrack
+nf_defrag_ipv6         16384  1 nf_conntrack
+nf_flow_table          32768  2 nf_flow_table_inet,nft_flow_offload
+nf_flow_table_inet     12288  0 
+nf_log_syslog          16384  0 
+nf_nat                 36864  4 nft_redir,nft_nat,nft_masq,nft_chain_nat
+nf_reject_ipv4         12288  2 nft_reject_ipv4,nft_reject_inet
+nf_reject_ipv6         12288  2 nft_reject_ipv6,nft_reject_inet
+nf_tables             200704208 nft_fib_inet,nf_flow_table_inet,nft_reject_ipv6,nft_reject_ipv4,nft_reject_inet,nft_reject,nft_redir,nft_quota,nft_numgen,nft_nat,nft_masq,nft_log,nft_limit,nft_hash,nft_flow_offload,nft_fib_ipv6,nft_fib_ipv4,nft_fib,nft_ct,nft_chain_nat
+nfnetlink              16384  1 nf_tables
+nft_chain_nat          12288  2 
+nft_ct                 20480  4 
+nft_fib                12288  3 nft_fib_inet,nft_fib_ipv6,nft_fib_ipv4
+nft_fib_inet           12288  0 
+nft_fib_ipv4           12288  1 nft_fib_inet
+nft_fib_ipv6           12288  1 nft_fib_inet
+nft_flow_offload       12288  0 
+nft_hash               12288  0 
+nft_limit              12288  5 
+nft_log                12288  0 
+nft_masq               12288  1 
+nft_nat                12288  0 
+nft_numgen             12288  0 
+nft_quota              12288  0 
+nft_redir              12288  0 
+nft_reject             12288  3 nft_reject_ipv6,nft_reject_ipv4,nft_reject_inet
+nft_reject_inet        12288  2 
+nft_reject_ipv4        12288  0 
+nft_reject_ipv6        12288  0 
+ppp_async              16384  0 
+ppp_generic            40960  3 pppoe,ppp_async,pppox
+pppoe                  20480  0 
+pppox                  12288  1 pppoe
+qca_nss_dp             40960  0 
+qca_ssdk              516096  1 qca_nss_dp
+qmi_helpers            20480  1 ath11k
+qrtr                   24576  6 qrtr_smd,qrtr_mhi
+qrtr_mhi               12288  0 
+qrtr_smd               12288  0 
+seqiv                  12288  0 
+sha3_generic           12288  0 
+sha512_arm64           16384  0 
+sha512_generic         12288  0 
+slhc                   12288  1 ppp_generic
+xhci_hcd              135168  2 xhci_plat_hcd,xhci_pci
+xhci_pci               16384  0 
+xhci_plat_hcd          12288  0 

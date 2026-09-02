@@ -81,7 +81,11 @@ sec "device tree the kernel booted with"
 if [ -f /sys/firmware/fdt ]; then
   echo "/sys/firmware/fdt present, $(wc -c < /sys/firmware/fdt) bytes"
   echo "--- base64 below: decode to running.dtb and decompile with dtc ---"
-  base64 /sys/firmware/fdt 2>/dev/null || uuencode /sys/firmware/fdt running.dtb
+  # NB: this box has neither base64 nor uuencode. Pull it directly instead:
+  #   ssh -T root@<host> 'cat /sys/firmware/fdt' > running.dtb
+  base64 /sys/firmware/fdt 2>/dev/null \
+    || od -An -tx1 -v /sys/firmware/fdt 2>/dev/null \
+    || echo "NO ENCODER: fetch /sys/firmware/fdt directly over ssh"
 else
   echo "ABSENT -- fall back to /proc/device-tree"
   find /proc/device-tree -maxdepth 3 2>/dev/null | sort
