@@ -31,6 +31,44 @@ for d in /sys/bus/mdio_bus/devices/*/; do
   done
 done
 
+sec "WIFI -- is the internal 2.4GHz radio up, or only the PCIe one?"
+# The vendor enables BOTH: wifi@c000000 (qcom,ipq5018-wifi, internal) and
+# wifi3@f00000 (qcom,cnss-qcn9000, the QCN9074 on PCIe). "Wi-Fi works" has
+# never been pinned to one or both. Two phys here means both came up.
+iw dev 2>/dev/null || echo "no iw"
+echo "--- phy count: $(ls -d /sys/class/ieee80211/phy* 2>/dev/null | wc -l) ---"
+for p in /sys/class/ieee80211/phy*; do
+  [ -d "$p" ] || continue
+  echo "$p  name=$(cat $p/name 2>/dev/null)  addr=$(cat $p/macaddress 2>/dev/null)"
+  echo "   device: $(readlink -f $p/device 2>/dev/null)"
+done
+
+sec "ath11k -- which firmware and which board file"
+# If no Linksys-SPNMX57 calibration variant exists upstream, ath11k falls back
+# to a generic board file SILENTLY and the radios get wrong regulatory/power.
+dmesg | grep -iE "ath11k|qmi|board-2|bdf|board_id|fallback" || echo "nothing matched"
+ls -l /lib/firmware/ath11k/ 2>/dev/null
+find /lib/firmware/ath11k -name "board*" 2>/dev/null
+
+sec "PCIe -- which controller enumerated"
+lspci 2>/dev/null || echo "no lspci"
+ls -l /sys/bus/pci/devices/ 2>/dev/null
+
+sec "LEDs and buttons"
+ls -l /sys/class/leds/ 2>/dev/null || echo "no leds"
+cat /sys/kernel/debug/gpio 2>/dev/null | head -40 || echo "no gpio debugfs"
+
+sec "MAC addresses -- label MACs or random?"
+for n in /sys/class/net/*/address; do
+  [ -f "$n" ] && printf '%-28s %s\n' "$n" "$(cat $n)"
+done
+cat /sys/bus/nvmem/devices/*/nvmem 2>/dev/null | strings 2>/dev/null | grep -iE "mac|hw_" | head -20
+
+sec "thermal"
+for z in /sys/class/thermal/thermal_zone*; do
+  [ -d "$z" ] && echo "$z $(cat $z/type 2>/dev/null) $(cat $z/temp 2>/dev/null)"
+done
+
 sec "network devices"
 ip -br link 2>/dev/null || ifconfig -a
 ls -l /sys/class/net/ 2>/dev/null
