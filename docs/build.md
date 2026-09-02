@@ -111,3 +111,67 @@ CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_linksys_spnmx57=y
    That is the first thing to check in the boot log
 2. **Port to socket mapping.** Still unknown, and still needs a cable and a
    look at which port lights up
+
+---
+
+# BUILD RESULT, 2026-09-02
+
+**It builds.** Three images, from OpenWrt `05feabfd09` plus the SPNMX57 DTS and
+image recipe:
+
+| image | size | use |
+|---|---|---|
+| `...-initramfs-uImage.itb` | 14.5 MB | **RAM bootable.** Test without flashing |
+| `...-squashfs-sysupgrade.bin` | 14.8 MB | flash from a running OpenWrt |
+| `...-squashfs-factory.bin` | 19.7 MB | flash from stock |
+
+LuCI and uhttpd are included, so the flashed unit gets a web UI without
+fighting `apk` snapshot drift.
+
+## The built DTB, verified against the vendor tree
+
+Decompiled the actual compiled `.dtb` rather than trusting the source. Every
+value below matches `collected/vendor/vendor-palm15.dts` exactly:
+
+| property | built | vendor |
+|---|---|---|
+| `model` | `Linksys SPNMX57` | n/a |
+| `num_devices` | `0x02` | `0x02` |
+| `ess-switch1@1` compatible | `qcom,ess-switch-qca8386` | same |
+| `switch_mac_mode` (both) | `0x0c` | `0x0c` |
+| `switch_mac_mode1` | `0xff` | `0xff` |
+| `switch_cpu_bmp` | `0x01` | `0x01` |
+| `switch_lan_bmp` | `0x1e` | `0x1e` |
+| `switch_wan_bmp` | `0x00` | `0x00` |
+| QCA8386 port0 | forced `0x9c4`/duplex 1 | same |
+| QCA8386 ports 1-4 | `phy_address` 1,2,3,4 | same |
+| SoC port_id 2 | forced `0x9c4`/duplex 1 | same |
+| `mdio@90000` reset | `<tlmm 0x18 1>` = gpio24 active low | gpio24 |
+| `dp1` | `disabled` | no nss-dp node |
+| `dp2` | `okay`, label `lan` | `qcom,id = 2` |
+
+## Three build failures worth recording
+
+1. **gcc 15 / glibc 2.42.** srv-openstack runs Ubuntu 26.04, and OpenWrt's
+   bundled gnulib will not compile against it:
+   `./stdlib.h:827:20: error: expected identifier or '(' before '_Generic'`.
+   Fixed by building inside a Debian 12 container (`owrt-deb12`)
+2. **Feed drift.** Pinning the core to the device's Nov 2025 commit while
+   pulling current feeds gives LuCI 2026 wanting `ucode >= 2026.02.27` against
+   a `2025.11.07` core. Fixed by pinning the luci feed to
+   `9717162fd030ba8a3b0adad0af330648ef9fe3e1` (2025-11-12)
+3. **Stale artifacts beat the pin.** After pinning, `bin/packages/.../luci/`
+   still held the old `~506ca60` apks and apk kept selecting them. The fix is
+   to delete that directory, not just re-run `feeds update`
+
+## Worth knowing: master has moved on
+
+`qualcommax` on master is now kernel **6.18** with mainline **stmmac + DSA**, a
+new **`qca_ppe`** driver, and a **`pcs: qca-uniphy`** driver. The SSDK is gone
+from that target.
+
+That last one matters: the PCS uniphy clock provider whose absence killed the
+mainline QCA8084 route on the pinned tree **now exists upstream**. QCA8084
+support itself still does not, and the SSDK-style DTS here is invalid on
+master, so this is the future direction rather than today's build. Revisit once
+this image has proved the topology is right.
