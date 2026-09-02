@@ -1,87 +1,110 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * Linksys SPNMX57 (Community Fibre, vendor codename "Palm15")
- *
- * ############################################################
- * #  CANDIDATE. NEVER BOOTED. Do not flash this. Attach UART  #
- * #  and boot it from RAM, so a wrong guess is a log to read. #
- * ############################################################
- *
- * Derived from the vendor's own device tree, extracted from the stock OEM
- * image and decompiled to collected/vendor/vendor-palm15.dts. Every value
- * below that came from there is marked [vendor]. Everything marked [GUESS]
- * is an inference and is the first place to look when this does not work.
- *
- * This is NOT the SPNMX56 with the PHY swapped. The topology differs:
- *
- *                   IPQ5018
- *   +----------------------------------+
- *   |  MAC0 -- internal GE PHY         |   present in silicon, NOT wired to
- *   |          (mdio0, addr 7)         |   any socket on this board
- *   |                                  |
- *   |  MAC1 -- UNIPHY1 ----------------+-- SGMII+ 2.5G forced --+
- *   |          (dp2)                   |                        |
- *   +----------------------------------+                        v
- *                                            +----------------------------+
- *                                            |          QCA8386           |
- *                                            |  port0 = CPU, 2500/full    |
- *                                            |  port1..4 = QCA8084 EPHYs  |
- *                                            |             at addr 1..4   |
- *                                            +----------------------------+
- *                                                 on mdio1 (0x90000)
- *
- * Kernel side prerequisites, none of which are optional:
- *
- *   - the mainline QCA8084 series (patches 0301-0312 in qualcommbe) backported
- *     to whichever tree this is built in
- *   - CONFIG_IPQ_NSSCC_QCA8K=y, for the package's own clock controller
- *   - dt-bindings headers: qcom,qca8k-nsscc.h, qcom,qca808x.h,
- *     reset/qcom,qca8k-nsscc.h
- *
- * Without those the phy-package node below will not even compile, let alone
- * probe. That is expected, not a mistake in this file.
- */
-
 /dts-v1/;
 
 #include "ipq5018.dtsi"
 #include "ipq5018-mx-base.dtsi"
 
-#include <dt-bindings/clock/qcom,qca8k-nsscc.h>
-#include <dt-bindings/reset/qcom,qca8k-nsscc.h>
-#include <dt-bindings/net/qcom,qca808x.h>
-
 / {
 	model = "Linksys SPNMX57";
 	compatible = "linksys,spnmx57", "qcom,ipq5018";
-
-	chosen {
-		bootargs-append = " root=/dev/ubiblock0_0 coherent_pool=2M";
-		stdout-path = "serial0:115200n8";
-	};
 };
 
 /*
- * MAC0 and its internal GE PHY.
- *
- * [vendor] The vendor tree declares port_id 1 / phy_address 7 on the SoC side
- * switch node, but defines NO nss-dp node for it. Only dp1 (qcom,id = 2, i.e.
- * MAC1) exists. That entry is Qualcomm AP-MP03.1 reference board boilerplate
- * that this board does not populate.
- *
- * So mdio0, ge_phy and dp1 are all left disabled here, which is the default.
- * If a front socket unexpectedly turns out to be wired to MAC0, this is the
- * assumption to revisit first.
- */
+* =================================================================
+*  Unlike the SPNMX56, there is no QCA8337 and no QCA8081. A single
+*  QCA8386 carries four QCA8084 EPHYs, reached over MDIO1, and hangs
+*  off MAC1 on one forced 2.5G SGMII+ link. MAC0 and its internal GE
+*  PHY exist in silicon but are not wired to any socket.
+*
+*     _______________________            ___________________________
+*    |        IPQ5018        |          |          QCA8386          |
+*    |                       |          |  port0 = CPU, 2500/full   |
+*    | +------+   +--------+ |          |  port1 -- QCA8084 EPHY @1 |
+*    | | MAC1 |---| Uniphy |-+-SGMII+---+  port2 -- QCA8084 EPHY @2 |
+*    | +------+   +--------+ |  2.5G    |  port3 -- QCA8084 EPHY @3 |
+*    |_______________________|          |  port4 -- QCA8084 EPHY @4 |
+*                                       |___________________________|
+*
+*  Source: the vendor's own device tree, extracted from the stock OEM
+*  image (see collected/vendor/ in the project repo). Values marked
+*  [vendor] are lifted from it directly.
+* =================================================================
+*/
+
+&ess_instance {
+	/* [vendor] num_devices = <2>: the SoC ESS plus the QCA8386 */
+	num_devices = <2>;
+
+	/*
+	 * [vendor] ess-switch1@1. The SSDK already carries full MHT
+	 * (QCA8084/QCA8386) support: qca_mht_hw_init() clocks the chip,
+	 * qca_mht_work_mode_init() applies the two mac modes below, and
+	 * qca_mht_ephy_addr_get() reads the EPHY addresses back out of the
+	 * strap register. So this node is a description, not a driver gap.
+	 */
+	switch1: ess-switch1@1 {
+		compatible = "qcom,ess-switch-qca8386";
+		device_id = <1>;
+		switch_access_mode = "mdio";
+		mdio-bus = <&mdio1>;
+
+		/* [vendor] 0x0c = MAC_MODE_SGMII_PLUS on the uplink,
+		 * 0xff = MAC_MODE_DISABLED on the unused second uplink */
+		switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
+		switch_mac_mode1 = <MAC_MODE_DISABLED>;
+
+		/* [vendor] port0 is the CPU port, ports 1-4 are LAN,
+		 * and there is no hardware WAN port on this switch */
+		switch_cpu_bmp = <ESS_PORT0>;
+		switch_lan_bmp = <(ESS_PORT1 | ESS_PORT2 | ESS_PORT3 | ESS_PORT4)>;
+		switch_wan_bmp = <0>;
+
+		qcom,port_phyinfo {
+			/* [vendor] CPU port, fixed 2.5G, no PHY */
+			port@0 {
+				port_id = <0>;
+				forced-speed = <2500>;
+				forced-duplex = <1>;
+			};
+
+			/* [vendor] the four QCA8084 EPHYs at MDIO 1..4 */
+			port@1 {
+				port_id = <1>;
+				phy_address = <1>;
+			};
+
+			port@2 {
+				port_id = <2>;
+				phy_address = <2>;
+			};
+
+			port@3 {
+				port_id = <3>;
+				phy_address = <3>;
+			};
+
+			port@4 {
+				port_id = <4>;
+				phy_address = <4>;
+			};
+		};
+	};
+};
 
 &switch {
 	status = "okay";
 
-	/* [vendor] switch_mac_mode = <0x0c> = MAC_MODE_SGMII_PLUS */
+	/* [vendor] SGMII+ toward the QCA8386, not SGMII_CHANNEL0 as on the 56 */
 	switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
 
 	qcom,port_phyinfo {
-		/* [vendor] MAC1 -> UNIPHY1 -> QCA8386 port0, fixed 2.5G, no PHY */
+		/*
+		 * [vendor] MAC1 -> UNIPHY1 -> QCA8386, forced 2.5G, no PHY.
+		 *
+		 * There is deliberately no port@0 here. The vendor declares one
+		 * for MAC0 but defines no nss-dp node to go with it, so it is
+		 * AP-MP03.1 reference board boilerplate rather than a real port.
+		 */
 		port@1 {
 			port_id = <2>;
 			forced-speed = <2500>;
@@ -90,12 +113,14 @@
 	};
 };
 
-/* [vendor] the only nss-dp node on this board: qcom,id = 2, XGMAC, sgmii */
+/*
+ * The only data port. dp1 (MAC0) stays disabled: its GE PHY is real
+ * silicon but is not wired to a socket on this board.
+ */
 &dp2 {
 	status = "okay";
 
 	label = "lan";
-	phy-mode = "sgmii";
 
 	nvmem-cells = <&hw_mac_addr 0>;
 	nvmem-cell-names = "mac-address";
@@ -104,275 +129,24 @@
 &mdio1 {
 	status = "okay";
 
-	/* [vendor] mdc = gpio36, mdio = gpio37 */
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
 
-	/* [vendor] phy-reset-gpio = <&tlmm 0x18 0x00>, i.e. gpio24.
-	 * [GUESS] the polarity. The vendor flag cell is 0, but vendor drivers
-	 * commonly ignore it and pulse the line low then high regardless, so
-	 * ACTIVE_LOW is the behaviour to match. If the package never comes out
-	 * of reset, try ACTIVE_HIGH here.
+	/*
+	 * [vendor] phy-reset-gpio = <&tlmm 0x18 0x00>, i.e. gpio24, which is
+	 * the QCA8386 package reset. The 56 uses gpio39 here for its QCA8337,
+	 * which is a different line entirely and does nothing useful on this
+	 * board.
+	 *
+	 * [GUESS] the polarity. The vendor flag cell is 0, but vendor code
+	 * commonly ignores the flag and pulses the line low then high, so
+	 * ACTIVE_LOW is what matches the behaviour. If the package never
+	 * comes out of reset, try ACTIVE_HIGH.
 	 */
 	reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
 	reset-delay-us = <10000>;
 	reset-post-delay-us = <50000>;
-
-	/*
-	 * The QCA8084 package's own clock controller, reached over this MDIO
-	 * bus at address 0x18. Needs CONFIG_IPQ_NSSCC_QCA8K=y.
-	 *
-	 * [GUESS] address 0x18. The mainline binding puts the nsscc at
-	 * clock-controller@18 and the vendor tree does not name it at all,
-	 * because the vendor does this from the SSDK rather than from DT.
-	 */
-	qca8k_nsscc: clock-controller@18 {
-		compatible = "qcom,qca8084-nsscc";
-		reg = <0x18>;
-		#clock-cells = <1>;
-		#reset-cells = <1>;
-		clocks = <&qca8k_uniphy1_tx312p5m>,
-			 <&qca8k_uniphy1_rx312p5m>;
-		clock-names = "uniphy1_tx312p5m", "uniphy1_rx312p5m";
-	};
-
-	/*
-	 * The package itself. This node is the entire fix for the -22: without
-	 * it, of_phy_package_join() has nothing to join and returns -EINVAL for
-	 * every one of the four addresses below.
-	 */
-	qca8084_package: ethernet-phy-package@1 {
-		#address-cells = <1>;
-		#size-cells = <0>;
-		compatible = "qcom,qca8084-package";
-		reg = <1>;
-
-		clocks = <&qca8k_nsscc NSS_CC_APB_BRIDGE_CLK>,
-			 <&qca8k_nsscc NSS_CC_AHB_CLK>,
-			 <&qca8k_nsscc NSS_CC_SEC_CTRL_AHB_CLK>,
-			 <&qca8k_nsscc NSS_CC_TLMM_CLK>,
-			 <&qca8k_nsscc NSS_CC_TLMM_AHB_CLK>,
-			 <&qca8k_nsscc NSS_CC_CNOC_AHB_CLK>,
-			 <&qca8k_nsscc NSS_CC_MDIO_AHB_CLK>;
-		clock-names = "apb_bridge", "ahb", "sec_ctrl_ahb", "tlmm",
-			      "tlmm_ahb", "cnoc_ahb", "mdio_ahb";
-
-		resets = <&qca8k_nsscc NSS_CC_GEPHY_FULL_ARES>;
-
-		/*
-		 * [GUESS] and the most likely thing here to be wrong.
-		 *
-		 * The vendor runs PCS1 in SGMII+ with PCS0 disabled
-		 * (switch_mac_mode = 0x0c, switch_mac_mode1 = 0xff). The
-		 * mainline enum has no value for that:
-		 *
-		 *   0  PCS1_10G_QXGMII_PCS0_UNUNSED   <- wrong, UNIPHY1 is 2.5G max
-		 *   1  PCS1_SGMII_MAC_PCS0_SGMII_MAC  <- closest
-		 *   2  PCS1_SGMII_MAC_PCS0_SGMII_PHY
-		 *
-		 * Mode 1 is chosen because PCS0 is unused, which makes its half
-		 * of the setting moot. If the package probes but no port ever
-		 * links, try mode 2 next.
-		 */
-		qcom,package-mode = <QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_MAC>;
-
-		/*
-		 * PHY0-3, PCS0, PCS1, XPCS.
-		 * [vendor] 1,2,3,4 for the EPHYs, from the four ethernet-phy
-		 * nodes on mdio@90000, each flagged `fixup`.
-		 * [GUESS] 5,6,7 for PCS0/PCS1/XPCS. These are the QCA8084
-		 * defaults and match the mainline binding example, but the
-		 * vendor tree gives the fixup REGISTER (0xc90f014) rather than
-		 * the values, so they are not confirmed for this board.
-		 */
-		qcom,phy-addr-fixup = <1 2 3 4 5 6 7>;
-
-		ethernet-phy@1 {
-			compatible = "ethernet-phy-id004d.d180";
-			reg = <1>;
-			clocks = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_CLK>;
-			resets = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_ARES>;
-			qcom,xpcs-channel = <0>;
-		};
-
-		ethernet-phy@2 {
-			compatible = "ethernet-phy-id004d.d180";
-			reg = <2>;
-			clocks = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_CLK>;
-			resets = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_ARES>;
-			qcom,xpcs-channel = <1>;
-		};
-
-		ethernet-phy@3 {
-			compatible = "ethernet-phy-id004d.d180";
-			reg = <3>;
-			clocks = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_CLK>;
-			resets = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_ARES>;
-			qcom,xpcs-channel = <2>;
-		};
-
-		ethernet-phy@4 {
-			compatible = "ethernet-phy-id004d.d180";
-			reg = <4>;
-			clocks = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_CLK>;
-			resets = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_ARES>;
-			qcom,xpcs-channel = <3>;
-		};
-
-		/* PCS1, the uplink toward the SoC */
-		pcs-phy@6 {
-			compatible = "qcom,qca8k-pcs-phy";
-			reg = <6>;
-			clocks = <&qca8k_nsscc NSS_CC_SRDS1_SYS_CLK>,
-				 <&qca8k_uniphy1_tx312p5m>,
-				 <&qca8k_uniphy1_rx312p5m>;
-			clock-names = "pcs", "pcs_rx_root", "pcs_tx_root";
-			resets = <&qca8k_nsscc NSS_CC_SRDS1_SYS_ARES>;
-		};
-
-		/*
-		 * XPCS. Present even in SGMII+ mode because the per port
-		 * MAC clocks hang off it. Trimmed to the four channels the
-		 * mainline binding defines; see that binding for the full
-		 * clock lists, which are reproduced verbatim below.
-		 */
-		xpcs-phy@7 {
-			compatible = "qcom,qca8k-xpcs-phy";
-			reg = <7>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-			resets = <&qca8k_nsscc NSS_CC_XPCS_ARES>;
-
-			channel@0 {
-				reg = <0>;
-				clocks = <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC1_RX_CLK_SRC>,
-					 <&qca8k_nsscc NSS_CC_MAC1_TX_CLK_SRC>;
-				clock-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx",
-					      "rx_src", "tx_src";
-				resets = <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_XGMII_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC1_SRDS1_CH0_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_TX_ARES>;
-				reset-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx";
-			};
-
-			channel@1 {
-				reg = <1>;
-				clocks = <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC2_RX_CLK_SRC>,
-					 <&qca8k_nsscc NSS_CC_MAC2_TX_CLK_SRC>;
-				clock-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx",
-					      "rx_src", "tx_src";
-				resets = <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_XGMII_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC2_SRDS1_CH1_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_TX_ARES>;
-				reset-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx";
-			};
-
-			channel@2 {
-				reg = <2>;
-				clocks = <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC3_RX_CLK_SRC>,
-					 <&qca8k_nsscc NSS_CC_MAC3_TX_CLK_SRC>;
-				clock-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx",
-					      "rx_src", "tx_src";
-				resets = <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_XGMII_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC3_SRDS1_CH2_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_TX_ARES>;
-				reset-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx";
-			};
-
-			channel@3 {
-				reg = <3>;
-				clocks = <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_RX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_TX_CLK>,
-					 <&qca8k_nsscc NSS_CC_MAC4_RX_CLK_SRC>,
-					 <&qca8k_nsscc NSS_CC_MAC4_TX_CLK_SRC>;
-				clock-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx",
-					      "rx_src", "tx_src";
-				resets = <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_XGMII_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_TX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC4_SRDS1_CH3_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_RX_ARES>,
-					 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_TX_ARES>;
-				reset-names = "xgmii_rx", "xgmii_tx", "xpcs_rx",
-					      "xpcs_tx", "port_rx", "port_tx";
-			};
-		};
-	};
 };
-
-/*
- * The QCA8386 switch fabric is deliberately NOT described here.
- *
- * There is no mainline driver for it. qca8k covers the QCA8327 and QCA8337
- * only. The vendor drives it with qcom,ess-switch-qca8386 out of its SSDK,
- * which OpenWrt does not carry.
- *
- * So the intended outcome of this file is one Ethernet interface with the
- * four sockets behind it, working as a dumb switch, IF the QCA8386 comes out
- * of reset forwarding. That is unverified. See docs/investigation.md.
- */
-
-/*
- * Wi-Fi and PCIe.
- *
- * [vendor, verified] &pcie0 and gpio15 are correct for this board, despite
- * looking like an inherited assumption from the 56. Mainline ipq5018.dtsi
- * labels the controllers the opposite way round to what their addresses
- * suggest:
- *
- *     pcie1: pcie@80000000     vendor: status = "disabled"
- *     pcie0: pcie@a0000000     vendor: status = "ok", perst-gpio gpio15
- *
- * and the phys agree: mainline pcie0_phy is phy@86000, which is the phandle
- * pci@a0000000 references in the vendor tree.
- *
- * [UNVERIFIED] the calibration variant name. If no "Linksys-SPNMX57" entry
- * has been contributed to openwrt/firmware_qca-wireless, ath11k silently
- * falls back to a generic board file and the radios come up with wrong
- * regulatory and power settings. Check what the flashed unit loads.
- *
- * [UNVERIFIED] whether the internal 2.4 GHz radio (&wifi, below) actually
- * comes up. The vendor enables both it and the PCIe QCN9074; "Wi-Fi works"
- * on this device has not been pinned down to one radio or both.
- */
 
 &pcie0_phy {
 	status = "okay";
@@ -391,20 +165,75 @@
 			compatible = "pci17cb,1104";
 			reg = <0x00010000 0 0 0 0>;
 
-			qcom,ath11k-calibration-variant = "Linksys-SPNMX57";
+			/*
+			 * Deliberately the SPNMX56 calibration variant. Wi-Fi is
+			 * already known good on this exact hardware with it, and a
+			 * SPNMX57 variant does not exist in firmware_qca-wireless
+			 * yet, so using one would silently fall back to a generic
+			 * board file. Keep the known quantity while Ethernet is
+			 * the thing under test.
+			 */
+			qcom,ath11k-calibration-variant = "Linksys-SPNMX56";
 		};
 	};
 };
-
 &q6v5_wcss {
-	firmware-name = "ath11k/IPQ5018/hw1.0/q6_fw.mdt",
-			"ath11k/IPQ5018/hw1.0/m3_fw.mdt";
-};
-
-&wifi {
 	status = "okay";
 
-	qcom,rproc = <&q6v5_wcss>;
-	qcom,ath11k-calibration-variant = "Linksys-SPNMX57";
+	memory-region = <&q6_mem_regions>;
+	firmware-name = "ath11k/IPQ5018/hw1.0/q6_fw.mdt",
+			"ath11k/IPQ5018/hw1.0/m3_fw.mdt";
+
+	// IPQ5018
+	q6_wcss_pd1: pd-1 {
+		firmware-name = "ath11k/IPQ5018/hw1.0/q6_fw.mdt";
+
+		resets =
+			<&gcc GCC_WCSSAON_RESET>,
+			<&gcc GCC_WCSS_BCR>,
+			<&gcc GCC_CE_BCR>;
+		reset-names =
+			"wcss_aon_reset",
+			"wcss_reset",
+			"ce_reset";
+
+		clocks =
+			<&gcc GCC_WCSS_AHB_S_CLK>,
+			<&gcc GCC_WCSS_ACMT_CLK>,
+			<&gcc GCC_WCSS_AXI_M_CLK>;
+		clock-names =
+			"gcc_wcss_ahb_s_clk",
+			"gcc_wcss_acmt_clk",
+			"gcc_wcss_axi_m_clk";
+
+		interrupts-extended =
+			<&wcss_smp2p_in 8 0>,
+			<&wcss_smp2p_in 9 0>,
+			<&wcss_smp2p_in 12 0>,
+			<&wcss_smp2p_in 11 0>;
+		interrupt-names =
+			"fatal",
+			"ready",
+			"spawn-ack",
+			"stop-ack";
+
+		qcom,smem-states =
+			<&wcss_smp2p_out 8>,
+			<&wcss_smp2p_out 9>,
+			<&wcss_smp2p_out 10>;
+		qcom,smem-state-names =
+			"shutdown",
+			"stop",
+			"spawn";
+	};
+};
+
+&wifi0 {
+	// IPQ5018
+	qcom,rproc = <&q6_wcss_pd1>;
+	qcom,ath11k-calibration-variant = "Linksys-SPNMX56";
 	qcom,ath11k-fw-memory-mode = <1>;
+	qcom,bdf-addr = <0x4c400000>;
+
+	status = "okay";
 };
