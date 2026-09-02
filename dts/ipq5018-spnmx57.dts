@@ -350,7 +350,29 @@
  * of reset forwarding. That is unverified. See docs/investigation.md.
  */
 
-/* Wi-Fi and PCIe are unchanged from the 56 apart from the calibration name. */
+/*
+ * Wi-Fi and PCIe.
+ *
+ * [vendor, verified] &pcie0 and gpio15 are correct for this board, despite
+ * looking like an inherited assumption from the 56. Mainline ipq5018.dtsi
+ * labels the controllers the opposite way round to what their addresses
+ * suggest:
+ *
+ *     pcie1: pcie@80000000     vendor: status = "disabled"
+ *     pcie0: pcie@a0000000     vendor: status = "ok", perst-gpio gpio15
+ *
+ * and the phys agree: mainline pcie0_phy is phy@86000, which is the phandle
+ * pci@a0000000 references in the vendor tree.
+ *
+ * [UNVERIFIED] the calibration variant name. If no "Linksys-SPNMX57" entry
+ * has been contributed to openwrt/firmware_qca-wireless, ath11k silently
+ * falls back to a generic board file and the radios come up with wrong
+ * regulatory and power settings. Check what the flashed unit loads.
+ *
+ * [UNVERIFIED] whether the internal 2.4 GHz radio (&wifi, below) actually
+ * comes up. The vendor enables both it and the PCIe QCN9074; "Wi-Fi works"
+ * on this device has not been pinned down to one radio or both.
+ */
 
 &pcie0_phy {
 	status = "okay";
