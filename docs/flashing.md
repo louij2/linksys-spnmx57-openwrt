@@ -110,3 +110,68 @@ The preserved `/etc/config/network` declares
 the QCA8386 topology. netifd normally skips unresolvable bridge ports and
 `br-lan` still comes up empty. Untested, and it is the most likely way to boot
 successfully yet come back unreachable.
+
+---
+
+# The bootcount trap, and why this is TWO flashes
+
+The adversarial pass caught a contradiction in the fix list above. It is the
+single most important thing on this page.
+
+## The trap
+
+`/etc/init.d/bootcount` runs at `START=99` and does `mtd resetbc s_env`, which
+clears U-Boot's boot counter. Adding a `linksys,spnmx57` case to it makes the
+new image "stick" — and in doing so **destroys the recovery net that makes
+flashing survivable at all**.
+
+| scenario | bootcount **fixed** | bootcount **unfixed** |
+|---|---|---|
+| boots, Wi-Fi comes up | sticks permanently | works, but reverts on the 4th power cycle |
+| boots, **Wi-Fi does not come up** | counter reset every boot, U-Boot **never flips**, device **permanently unreachable** | counter climbs, 4th power cycle flips, **recovered** |
+| does not boot at all | counter climbs, 4th cycle flips, recovered | same, recovered |
+
+The middle row is the one that matters. "Boots fine but comes back unreachable"
+is the most likely failure here, because the preserved `/etc/config/network`
+still lists ports (`lan1 lan2 lan3`) that do not exist under the QCA8386
+topology. Fixing bootcount converts the one recoverable failure into an
+unrecoverable one.
+
+## So: test image first, permanent image second
+
+### Stage 1 — `TEST-squashfs-sysupgrade.bin`
+
+- caldata fix **kept** (this is what gives the radios their MACs, and Wi-Fi is
+  the only way in)
+- `platform.sh`, `02_network`, `05-wifi-migrate` fixes kept
+- **bootcount fix deliberately omitted**, so the device rescues itself
+
+Worst case: power cycle four times and you are back on the working SPNMX56
+install. Nothing is lost.
+
+### Stage 2 — `PERMANENT-squashfs-sysupgrade.bin`
+
+Only after stage 1 is confirmed booted and reachable. Adds the bootcount case
+so the image stops self-reverting.
+
+## Two further gates found by the adversarial pass
+
+Seven board-name gates exist in the shipped rootfs, not five. The two extra:
+
+- `/etc/uci-defaults/30_uboot-envtools` — without a case there is no
+  `/etc/config/ubootenv` and no `/etc/fw_env.config` on a clean install, so
+  `fw_printenv`/`fw_setenv` stop working. Mitigated on a config-preserving
+  upgrade by `keep.d/uboot-envtools`
+- `/etc/apk/world` — cosmetic, records the board's package set
+
+Neither is brick-grade. Both belong in the permanent image.
+
+## Images and their checksums
+
+| file | md5 | bootcount case | use |
+|---|---|---|---|
+| `TEST-squashfs-sysupgrade.bin` | `ae46a8598910048aaf127fb138f0f541` | absent, self-recovering | **flash this first** |
+| `PERMANENT-squashfs-sysupgrade.bin` | `f9f276f940ea342801bc5f98cc7b316b` | present, sticks | flash only after stage 1 works |
+
+The TEST image is already staged on the device at `/tmp/spnmx57.bin`, md5
+verified, and its dry run passes.
