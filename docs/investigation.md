@@ -93,3 +93,27 @@ to find out, in increasing order of effort:
 You have **more than one of these routers, and only one is flashed.** A unit
 still on stock firmware carries the vendor's own DTB, which describes this exact
 board correctly by definition. Dumping it beats inferring anything from the 56.
+
+## Getting the vendor DTB without opening the second router
+
+Opening the case is destructive and awkward, so do **not** open a second unit.
+Better options, cheapest first:
+
+1. **Check the other firmware slot first — no flashing at all.** Linksys devices
+   of this era typically carry two firmware partitions. If OpenWrt was installed
+   into one slot, **the stock image may still be sitting in the other**, and its
+   DTB can be extracted from the already-open, UART-equipped unit with no risk
+   and no reflash. `cat /proc/mtd` and look for a second kernel/rootfs pair; then
+   dump that partition and pull the DTB out of the kernel image offline. This
+   costs nothing and should be tried before anything else.
+2. **Extract from a stock firmware image**, if Linksys publish one for the 57.
+   The DTB can be unpacked from the downloaded image on a laptop, without
+   touching hardware at all.
+3. **Flash the UART unit back to stock temporarily**, boot it, dump
+   `/sys/firmware/fdt` or `/proc/device-tree`, then reflash OpenWrt. Safe *because*
+   it has UART, but it is the most effort and the most risk of the three, so it
+   is the fallback rather than the plan.
+
+In all three cases the goal is the same: the vendor's own device tree for the
+**57**, which describes this exact board correctly and settles the QCA8084
+versus QCA8337+QCA8081 question outright.
