@@ -39,7 +39,7 @@ driver on 6.18 — that may change the answer later.)
 The SSDK route is right: `openwrt/qca-ssdk` already contains full MHT
 (QCA8084/QCA8386) support — `ssdk_mht.c`, `ssdk_mht_clk.c`, `hsl/mht/*`.
 
-**4. But MHT is compiled out** ← actionable
+**4. MHT is compiled out — fixed, and it works** ← actionable
 
 `package/kernel/qca-ssdk/Makefile` passes `MHT_ENABLE=disable` for every subtarget,
 and qca-ssdk's own `config` only auto-enables MHT for ipq53xx/ipq95xx/ipq60xx.
@@ -47,10 +47,28 @@ Verified on the running unit:
 
     strings /lib/modules/6.12.57/qca-ssdk.ko | grep -ci mht   ->  0
 
-So `regi_init`'s `case CHIP_MHT:` is an empty break. Adding `MHT_ENABLE=enable`
-for ipq50xx currently fails to build: `IN_QCA808X_PHY=TRUE` pulls in
-`src/hsl/phy/qca808x.c`, whose `match_phy_device` has the pre-6.12 signature
-(6.12 added `const struct phy_driver *`). Small fix, not yet done.
+So `regi_init`'s `case CHIP_MHT:` was an empty break. Adding to the ipq50xx block:
+
+    MAKE_FLAGS+= CHIP_TYPE=MP MHT_ENABLE=enable ISISC_ENABLE=enable IN_QCA808X_PHY=TRUE
+
+(MAKE_FLAGS is one command line, so these later assignments beat the blanket
+`MHT_ENABLE=disable` above.) Result: **303** MHT strings, and a line that never
+appeared before:
+
+    ssdk_dt_parse[1446]:INFO:switch node is qca8386!
+
+**4b. That build needs an upstream fix to qca-ssdk** — likely affects anyone
+enabling MHT on a 6.12 target, not just this board. `IN_QCA808X_PHY=TRUE` pulls in
+`src/hsl/phy/qca808x.c`, whose `match_phy_device` still uses the pre-6.12
+one-argument form; 6.12 added `const struct phy_driver *`. Build dies with
+`-Wincompatible-pointer-types` at the `.match_phy_device` initialiser. Fix:
+
+    #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6,12,0))
+    int qca808x_match_phy_device(struct phy_device *phydev,
+                    const struct phy_driver *phydrv)
+    #else
+    int qca808x_match_phy_device(struct phy_device *phydev)
+    #endif
 
 **5. The actual chicken-and-egg**
 
@@ -79,6 +97,32 @@ and SSDK's own MHT clock code runs only *after* detection succeeds.
   On ipq5018 `chip_ver_get` falls through to `chip_is_scomphy()` → `qca_detect_phyid(0)`,
   which reads that PHY. Remove it and **device 0** fails with `-ENODEV` too.
 
+**6b. The bus map — measured, not inferred**
+
+With MHT compiled in I put explicit `ethernet-phy@N { reg = <N>; }` children for
+all 32 addresses on `&mdio1`, so the kernel probes the bus itself before qca-ssdk
+loads. Result on a cold chip:
+
+| addr | phy_id |
+|---|---|
+| `0x00`-`0x03` | missing (`0xffff`) |
+| `0x04`, `0x05` | `0x00000000` |
+| `0x06`-`0x0f` | missing |
+| `0x10`-`0x13` | `0x00000000` |
+| `0x14`-`0x1f` | `0xb00eb00e` |
+
+Control on `mdio@88000` addr 7: `0x004dd0c0`, valid.
+
+**No valid PHY ID anywhere** (QCA8084 would be `0x004dd180`). A `0xb00eb00e`
+repeating identically in regs 2 and 3 is not a device. But the structure — some
+`0xffff`, some `0x0000`, some a repeating word — suggests the chip is present and
+partially responsive, just uninitialised. This is the direct measurement behind
+point 5: the EPHYs really are unreachable at 1-4 or anywhere else until something
+writes the strap.
+
+This scan is also the cheap success test for anyone attempting the port: it should
+show `0x004dd180` at addresses 1, 2, 3, 4.
+
 **7. Status**
 
 Image builds, flashes (`sysupgrade -F`, board name mismatch needs it), boots as
@@ -95,10 +139,14 @@ self-reverts.
 
 **What's left**
 
-1. Fix the `qca808x.c` `match_phy_device` signature so `MHT_ENABLE=enable` builds
-2. Port `qca_mht_preinit()` (address strap + clock init) into
-   `mdio-ipq4019.c`, gated on the `*_fixup` DT properties — **this is the main
-   piece of work and where help would count most**
-3. Then: does the QCA8386 forward by default, and what's the socket-to-port map
+Just one thing now: **port `qca_mht_preinit()` (address strap + clock init) into
+`mdio-ipq4019.c`**, gated on the `*_fixup` DT properties. Everything else is done
+and measured. This is where help would count most — if anyone has already done
+this, or knows the QSDK `mdio-qca.c` path well, please say.
+
+After that: does the QCA8386 forward by default, and what's the socket-to-port map.
+
+Repo with the vendor DTB, all boot logs, the DTS and the patches:
+https://github.com/louij2/linksys-spnmx57-openwrt
 
 Happy to share the full write-up, vendor DTB, boot logs and DTS if useful.
