@@ -28,7 +28,7 @@ hand, and is commented as such.
 ---
 --- a/drivers/net/mdio/mdio-ipq4019.c
 +++ b/drivers/net/mdio/mdio-ipq4019.c
-@@ -8,6 +8,7 @@
+@@ -8,10 +8,13 @@
  #include <linux/kernel.h>
  #include <linux/module.h>
  #include <linux/of_address.h>
@@ -36,7 +36,13 @@ hand, and is commented as such.
  #include <linux/of_mdio.h>
  #include <linux/phy.h>
  #include <linux/platform_device.h>
-@@ -48,6 +49,279 @@
+ #include <linux/clk.h>
++#include <linux/gpio/consumer.h>
++#include <linux/mii.h>
+ 
+ #define MDIO_MODE_REG				0x40
+ #define   MDIO_MODE_MDC_MODE			BIT(12)
+@@ -48,6 +51,368 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -188,19 +194,80 @@ hand, and is commented as such.
 +	static const u32 clk_a = 0x0c8001a8, clk_b = 0x0c8001ac;
 +	static const u32 ephy_clk[4] = { 0x0c8001b0, 0x0c8001b4,
 +					  0x0c8001b8, 0x0c8001bc };
++	struct gpio_desc *reset_gpio;
 +	u32 ephy_cfg, gate_reg;
++	u32 delay_us, post_delay_us;
 +	u32 reg;
 +	int port, ret;
 +
-+	/* Now called before of_mdiobus_register(), so the MDIO controller's
-+	 * own reset/clock-divider setup (normally run as part of bus
-+	 * registration) has NOT happened yet at this point -- without it,
-+	 * every transaction on this bus reads back all-1s (confirmed: the
-+	 * first attempt at this ordering read EPHY_CFG as 0xffffffff, not a
-+	 * real value). bus->reset is already assigned by this point in
-+	 * probe() and only touches priv fields (membase, mdio_clk) set up
-+	 * earlier in probe() too, so it is safe to call directly here
-+	 * without the bus being registered.
++	/* The bus-level PHY reset line.
++	 *
++	 * This is the second consequence of moving preinit before
++	 * of_mdiobus_register(), and it is why the previous attempt at the new
++	 * ordering still read 0xffffffff even after the mdio_lock fix.
++	 * __mdiobus_register() is what claims the bus's reset GPIO and pulses
++	 * it (devm_gpiod_get_optional(&bus->dev, "reset", GPIOD_OUT_HIGH),
++	 * then assert / reset-delay-us / deassert / reset-post-delay-us).
++	 * Running before registration means that has not happened yet: on this
++	 * board tlmm gpio24 is still unclaimed with a pull-down, i.e. sitting
++	 * low, and the line is GPIO_ACTIVE_LOW, so the QCA8386 package is held
++	 * in hardware reset for the whole of preinit. A chip in reset answers
++	 * every MDIO transaction with all-1s.
++	 *
++	 * Consistent with both things already observed on this hardware: reads
++	 * worked and returned 0x00318820 when preinit ran after registration
++	 * (line deasserted, physically high), and return all-1s when it runs
++	 * before (line never claimed, physically low).
++	 *
++	 * So preinit takes ownership of the line. The DTS deliberately names
++	 * the property "qca8084-reset-gpios" rather than "reset-gpios": if it
++	 * were still called "reset-gpios" then (a) __mdiobus_register() would
++	 * re-request it and fail with -EBUSY, and (b) even if it did not, it
++	 * would re-pulse the line after preinit and throw away the clock,
++	 * reset and calibration work done here.
++	 */
++	reset_gpio = devm_gpiod_get_optional(bus->parent, "qca8084-reset",
++					     GPIOD_ASIS);
++	if (IS_ERR(reset_gpio)) {
++		dev_warn(bus->parent, "qca8084: reset gpio get failed (%ld)\n",
++			 PTR_ERR(reset_gpio));
++		reset_gpio = NULL;
++	}
++
++	if (reset_gpio) {
++		/* Logged before we drive anything: this is the diagnostic that
++		 * decides whether the reset line really was the blocker. A
++		 * logical 1 here means asserted, i.e. the package was in reset
++		 * on entry, which is the predicted state.
++		 */
++		dev_info(bus->parent,
++			 "qca8084: reset gpio as found = %d (1 = asserted, in reset)\n",
++			 gpiod_get_value_cansleep(reset_gpio));
++
++		if (of_property_read_u32(bus->parent->of_node,
++					 "reset-delay-us", &delay_us))
++			delay_us = 10000;
++		if (of_property_read_u32(bus->parent->of_node,
++					 "reset-post-delay-us", &post_delay_us))
++			post_delay_us = 50000;
++
++		gpiod_direction_output(reset_gpio, 1);
++		fsleep(delay_us);
++		gpiod_set_value_cansleep(reset_gpio, 0);
++		fsleep(post_delay_us);
++		dev_info(bus->parent,
++			 "qca8084: reset pulsed and deasserted (%u us / %u us)\n",
++			 delay_us, post_delay_us);
++	} else {
++		dev_warn(bus->parent,
++			 "qca8084: no qca8084-reset-gpios in DTS, package may still be held in reset\n");
++	}
++
++	/* The MDIO controller's own reset/clock-divider setup also normally
++	 * runs as part of bus registration, so do it here too. bus->reset is
++	 * already assigned by this point in probe() and only touches priv
++	 * fields (membase, mdio_clk) set up earlier in probe(), so it is safe
++	 * to call directly without the bus being registered.
 +	 */
 +	if (bus->reset)
 +		bus->reset(bus);
@@ -217,6 +284,34 @@ hand, and is commented as such.
 +	for (port = 0; port < 4; port++)
 +		dev_info(bus->parent, "qca8084: port %d strap addr = 0x%x\n",
 +			 port, (ephy_cfg >> (port * 5)) & 0x1f);
++
++	/* Diagnostic, and the thing that makes this boot conclusive either
++	 * way. If EPHY_CFG still reads all-1s then the reset line was not the
++	 * (only) blocker, and the next question is whether ANY device answers
++	 * Clause 22 on this bus at this point in probe -- which distinguishes
++	 * "the chip is not responding" from "the MDIO controller itself is not
++	 * usable yet here". Reading PHY ID register 2 from all 32 addresses
++	 * answers that in one boot instead of another build cycle.
++	 */
++	if (ephy_cfg == 0xffffffff) {
++		int addr, found = 0;
++
++		dev_warn(bus->parent,
++			 "qca8084: EPHY_CFG still all-1s, scanning bus for any C22 responder\n");
++		for (addr = 0; addr < 32; addr++) {
++			int id2 = bus->read(bus, addr, MII_PHYSID2);
++
++			if (id2 >= 0 && id2 != 0xffff) {
++				dev_warn(bus->parent,
++					 "qca8084: scan: addr %d answers, PHYSID2 = 0x%04x\n",
++					 addr, id2);
++				found++;
++			}
++		}
++		if (!found)
++			dev_warn(bus->parent,
++				 "qca8084: scan: no device answered on any of the 32 addresses\n");
++	}
 +
 +	/* clock enable, then reset-pulse, both shared blocks first */
 +	qca8084_clk_enable(bus, clk_a);
@@ -316,7 +411,7 @@ hand, and is commented as such.
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -367,6 +641,31 @@
+@@ -367,6 +732,31 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
