@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,368 @@
+@@ -48,6 +51,474 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -70,6 +70,12 @@ hand, and is commented as such.
 +#define QCA8084_PAGE_REG	0x0c
 +#define QCA8084_DATA_PHY	0x10
 +#define QCA8084_EPHY_CFG	0x0c90f018u
++/* companion register holding the next three MDIO addresses */
++#define QCA8084_MDIO_ADDR_CFG	0x0c90f014u
++/* cleared to 0 in bits [4:0] partway through the bring-up sequence */
++#define QCA8084_EPHY_HOLD	0x0c800304u
++/* read to decide whether the vendor runs the calibration loop */
++#define QCA8084_CALIB_GATE	0x0c900014u
 +
 +static int qca8084_reg_read32(struct mii_bus *bus, u32 addr, u32 *val)
 +{
@@ -195,7 +201,8 @@ hand, and is commented as such.
 +	static const u32 ephy_clk[4] = { 0x0c8001b0, 0x0c8001b4,
 +					  0x0c8001b8, 0x0c8001bc };
 +	struct gpio_desc *reset_gpio;
-+	u32 ephy_cfg, gate_reg;
++	u32 ephy_cfg, gate_reg, reg_val;
++	bool vendor_gate = false;
 +	u32 delay_us, post_delay_us;
 +	u32 reg;
 +	int port, ret;
@@ -313,6 +320,61 @@ hand, and is commented as such.
 +				 "qca8084: scan: no device answered on any of the 32 addresses\n");
 +	}
 +
++	/* Assign the MDIO addresses, BEFORE the bring-up sequence below.
++	 *
++	 * This is a separate vendor function, FUN_4a94c7d0, missing entirely
++	 * from the first transcription, and the order matters. FUN_4a94b918
++	 * calls it at 0x4a94baa6 and then calls the bring-up routine at
++	 * 0x4a94baaa -- two consecutive bl instructions, address assignment
++	 * first. Running it after the bring-up instead left the four EPHYs
++	 * silent on the bus even though the writes provably landed (the two
++	 * companion devices moved from addresses 4,5 to 5,6 exactly as asked).
++	 * That fits the addresses being latched when the bring-up routine
++	 * clears EPHY_CFG bits [21:20] as its final step: set them after that
++	 * and there is nothing left to latch them.
++	 *
++	 * The four EPHYs do not stay where they are strapped. EPHY_CFG reads
++	 * 0x00318820 out of reset, i.e. strap addresses 0,1,2,3, but the
++	 * vendor overwrites the low 20 bits with a hardcoded 0x20c41, which
++	 * is the same four 5-bit fields holding 1,2,3,4:
++	 *
++	 *     0x20c41 = 1 | (2 << 5) | (3 << 10) | (4 << 15)
++	 *
++	 * So the vendor DTS's phy_address = <1>,<2>,<3>,<4> was right all
++	 * along, and reading the strap and "correcting" the DTS to 0,1,2,3
++	 * was reading the power-on default rather than the address the chip
++	 * is actually driven to. The DTS is set back to 1,2,3,4 to match.
++	 *
++	 * The companion register QCA8084_MDIO_ADDR_CFG gets the next three
++	 * addresses. The vendor computes them with a first-free-bit scan over
++	 * a hardcoded in-use bitmap of 0xffff001e -- bits 1-4 for the EPHYs
++	 * just placed, and bits 16-31 for the switch's own register window.
++	 * That bitmap is a constant, so the scan is deterministic and yields
++	 * 5, 6, 7; the result is written directly rather than porting the
++	 * scan. 0x1cc5 = 5 | (6 << 5) | (7 << 10).
++	 *
++	 * The 16-31 half of that bitmap independently matches what the bus
++	 * scan sees on this board: every address from 0x10 to 0x1f answers,
++	 * all reporting PHY ID 0x00010001, which is the switch window
++	 * aliasing rather than sixteen real PHYs.
++	 */
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
++	if (!ret) {
++		qca8084_reg_write32(bus, QCA8084_EPHY_CFG,
++				    (ephy_cfg & 0xfff00000u) | 0x20c41u);
++		dev_info(bus->parent,
++			 "qca8084: EPHY MDIO addresses assigned 1,2,3,4\n");
++	}
++
++	ret = qca8084_reg_read32(bus, QCA8084_MDIO_ADDR_CFG, &reg_val);
++	if (!ret) {
++		qca8084_reg_write32(bus, QCA8084_MDIO_ADDR_CFG,
++				    (reg_val & ~0x7fffu) | 0x1cc5u);
++		dev_info(bus->parent,
++			 "qca8084: companion MDIO addresses assigned 5,6,7\n");
++	}
++	usleep_range(11000, 12000);
++
 +	/* clock enable, then reset-pulse, both shared blocks first */
 +	qca8084_clk_enable(bus, clk_a);
 +	qca8084_clk_enable(bus, clk_b);
@@ -341,22 +403,49 @@ hand, and is commented as such.
 +	for (port = 0; port < 4; port++)
 +		qca8084_reset_pulse(bus, ephy_clk[port]);
 +
++	/* Clear bits [4:0] of QCA8084_EPHY_HOLD. Transcribed from
++	 * FUN_4a94c630, where it sits exactly here, between the per-EPHY
++	 * reset pulses and the calibration gate read. It was missed in the
++	 * first transcription of the routine; Ghidra's literal pool resolves
++	 * the operand to 0x0c800304.
++	 *
++	 * Named "hold" on the guess that these five bits are a per-EPHY
++	 * hold/isolate, one per EPHY plus one shared -- the meaning is not
++	 * confirmed against a datasheet, only its position in the sequence.
++	 */
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_HOLD, &reg_val);
++	if (ret)
++		dev_warn(bus->parent, "qca8084: EPHY_HOLD read failed (%d)\n", ret);
++	else
++		qca8084_reg_write32(bus, QCA8084_EPHY_HOLD, reg_val & 0xffffffe0u);
++
 +	/* Calibration loop is gated: only runs if this status field is 1 or 2.
 +	 * Meaning not confirmed (chip variant / package mode?), transcribed
 +	 * as-is.
 +	 */
-+	ret = qca8084_reg_read32(bus, 0x0c900014, &gate_reg);
++	ret = qca8084_reg_read32(bus, QCA8084_CALIB_GATE, &gate_reg);
 +	if (ret) {
 +		dev_warn(bus->parent, "qca8084: gate register read failed (%d)\n",
 +			 ret);
 +	} else {
-+		bool vendor_gate = (((gate_reg & 0xffffff) >> 0x10) - 1) < 2;
++		vendor_gate = (((gate_reg & 0xffffff) >> 0x10) - 1) < 2;
 +
 +		dev_info(bus->parent,
-+			 "qca8084: gate register 0x%08x (vendor condition %s) -- calibrating anyway to test whether it is a hard requirement\n",
++			 "qca8084: gate register 0x%08x, vendor calibration condition %s\n",
 +			 gate_reg, vendor_gate ? "true" : "false");
 +	}
-+	if (!ret) {
++	/* The gate is honoured again rather than bypassed. Bypassing it was a
++	 * diagnostic from when this register could only be read as 0xffffffff;
++	 * now that the package is out of reset it reads a real 0x00080000, and
++	 * the vendor's own condition on that value is false:
++	 *
++	 *     (((0x00080000 & 0xffffff) >> 16) - 1) = 7, which is not < 2
++	 *
++	 * So the stock firmware, which does bring Ethernet up on this board,
++	 * skips the calibration loop on this silicon. Running it anyway is the
++	 * unvalidated deviation, not the other way round.
++	 */
++	if (!ret && vendor_gate) {
 +		for (port = 0; port < 4; port++) {
 +			const struct qca8084_calib_src *src = &qca8084_calib_srcs[port];
 +			u32 srcval, ephy_cfg_now;
@@ -389,13 +478,12 @@ hand, and is commented as such.
 +				 "qca8084: port %d (phy 0x%x) calibrated, trim_a=0x%x trim_b=0x%x\n",
 +				 port, phy_addr, trim_a, trim_b);
 +		}
-+	} else {
++	} else if (!ret) {
 +		dev_info(bus->parent,
-+			 "qca8084: gate register 0x%08x, calibration loop skipped\n",
-+			 gate_reg);
++			 "qca8084: gate condition false, calibration loop skipped (matches the vendor)\n");
 +	}
 +
-+	/* final step: clear bits [21:20] of EPHY_CFG and settle */
++	/* final step of FUN_4a94c630: clear bits [21:20] of EPHY_CFG, settle */
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
 +	if (!ret) {
 +		qca8084_reg_write32(bus, QCA8084_EPHY_CFG, ephy_cfg & 0xffcfffffu);
@@ -406,12 +494,30 @@ hand, and is commented as such.
 +	if (!ret)
 +		dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x after preinit\n",
 +			 ephy_cfg);
++
++	/* Final bus map, logged unconditionally. of_mdiobus_register() only
++	 * reports the addresses the DTS names, so this is the only way to see
++	 * what the whole bus looks like once bring-up has finished.
++	 */
++	{
++		int addr;
++
++		for (addr = 0; addr < 32; addr++) {
++			int id1 = bus->read(bus, addr, MII_PHYSID1);
++			int id2 = bus->read(bus, addr, MII_PHYSID2);
++
++			if (id1 > 0 && id1 != 0xffff)
++				dev_info(bus->parent,
++					 "qca8084: post-init scan: addr %d -> PHY ID 0x%04x%04x\n",
++					 addr, id1, id2);
++		}
++	}
 +}
 +
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -367,6 +732,31 @@
+@@ -367,6 +838,31 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
