@@ -189,6 +189,10 @@
 	 */
 	qcom,qca8084-preinit;
 
+	/* TEST BUILD ONLY: full bring-up instrumentation on. Drop this
+	 * line again before cutting another release image. */
+	qcom,qca8084-preinit-debug;
+
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
 
