@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,682 @@
+@@ -48,6 +51,804 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -89,6 +89,15 @@ hand, and is commented as such.
 +#define QCA8084_MDIO_CTRL1	0x0c90f040u
 +/* fuse row carrying the SKU, per qca_mht_sku_check() */
 +#define QCA8084_QFPROM_PTE_ROW0	0x0c900000u
++/* clock controller, per MHT_CLK_BASE_REG and the RCGR/CBCR bit definitions in
++ * qca-ssdk include/init/ssdk_mht_clk.h
++ */
++#define QCA8084_CLK_BASE	0x0c800000u
++#define QCA8084_SWITCH_CORE_CBCR	0x0c800008u
++/* bit 0 = GCC_GLOBAL_CTL_GCC_TOP_FUNC_ARES, aka MHT_GLOBAL_RST */
++#define QCA8084_GLOBAL_CTL	0x0c800308u
++#define QCA8084_RCGR_CMD_UPDATE	0x1u
++#define QCA8084_RCGR_SRC_SEL	0x700u
 +
 +/* The bring-up sequence logs a lot: a read-back verdict for every register it
 + * writes, the strap addresses, the gate value, and a full 32-address bus scan.
@@ -262,6 +271,67 @@ hand, and is commented as such.
 +	/* port 3 */ { 0x0c90005c, 0x0e, 0x3ffff,   0x12, 0x7fffff },
 +};
 +
++/* Program a root clock generator and commit it.
++ *
++ * Straight from the vendor's own Linux driver, qca-ssdk
++ * src/init/ssdk_mht_clk.c: the config register holding the source select
++ * lives at MHT_CLK_BASE_REG + clk->rcg, and the command register that
++ * commits it is four bytes BELOW that, at + clk->rcg - 4. Setting
++ * RCGR_CMD_UPDATE starts the update and the hardware clears it when done.
++ *
++ * This whole step was missing. The bring-up transcribed from the bootloader
++ * only ever set the enable bit in the branch registers (CBCR bit 0), never
++ * programmed or committed the RCG that feeds them, so the branches were
++ * being enabled with no committed source. That is consistent with the one
++ * write that has ever refused to land on this board -- MEM_CTRL, which is
++ * switch-core state and would not be writable with the core unclocked.
++ */
++static int qca8084_rcg_commit(struct mii_bus *bus, const char *what,
++			      u32 rcg_off, u32 src)
++{
++	u32 cfg_reg = QCA8084_CLK_BASE + rcg_off;
++	u32 cmd_reg = QCA8084_CLK_BASE + rcg_off - 4;
++	u32 val;
++	int i, ret;
++
++	ret = qca8084_reg_read32(bus, cfg_reg, &val);
++	if (ret) {
++		dev_warn(bus->parent, "qca8084: %s RCG cfg read failed (%d)\n",
++			 what, ret);
++		return ret;
++	}
++
++	val &= ~QCA8084_RCGR_SRC_SEL;
++	val |= (src << 8) & QCA8084_RCGR_SRC_SEL;
++	ret = qca8084_reg_write32(bus, cfg_reg, val);
++	if (ret)
++		return ret;
++
++	ret = qca8084_reg_read32(bus, cmd_reg, &val);
++	if (ret)
++		return ret;
++	ret = qca8084_reg_write32(bus, cmd_reg, val | QCA8084_RCGR_CMD_UPDATE);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < 1000; i++) {
++		if (qca8084_reg_read32(bus, cmd_reg, &val))
++			break;
++		if (!(val & QCA8084_RCGR_CMD_UPDATE)) {
++			dev_info(bus->parent,
++				 "qca8084: %s RCG committed, src %u, after %d us\n",
++				 what, src, i);
++			return 0;
++		}
++		udelay(1);
++	}
++
++	dev_warn(bus->parent,
++		 "qca8084: %s RCG update never cleared (cmd 0x%08x = 0x%08x)\n",
++		 what, cmd_reg, val);
++	return -ETIMEDOUT;
++}
++
 +static void qca8084_preinit(struct mii_bus *bus)
 +{
 +	static const u32 clk_a = 0x0c8001a8, clk_b = 0x0c8001ac;
@@ -380,6 +450,36 @@ hand, and is commented as such.
 +	if (bus->reset)
 +		bus->reset(bus);
 +
++	/* Pulse the chip's own global reset before configuring anything.
++	 *
++	 * 0x0c800308 bit 0 is GCC_GLOBAL_CTL_GCC_TOP_FUNC_ARES in the vendor's
++	 * register map, and the same bit is MHT_GLOBAL_RST in qca-ssdk's clock
++	 * lookup table. It is the only documented reset in this chip that this
++	 * driver has never used: the package reset GPIO resets from outside,
++	 * and the per-branch CBCR bit 2 resets one clock domain, but this is
++	 * the internal reset of the whole top-level function block.
++	 *
++	 * Done here, before any configuration, so that the work mode, memory
++	 * config, MDIO addresses and clock setup that follow all land on a
++	 * chip in a known state rather than whatever the straps plus a partial
++	 * bootloader left behind.
++	 */
++	ret = qca8084_reg_read32(bus, QCA8084_GLOBAL_CTL, &reg_val);
++	if (ret) {
++		dev_warn(bus->parent, "qca8084: GLOBAL_CTL read failed (%d)\n", ret);
++	} else {
++		dev_info(bus->parent, "qca8084: GLOBAL_CTL before = 0x%08x\n",
++			 reg_val);
++		qca8084_reg_write32(bus, QCA8084_GLOBAL_CTL, reg_val | 1u);
++		usleep_range(10000, 11000);
++		qca8084_reg_write32(bus, QCA8084_GLOBAL_CTL, reg_val & ~1u);
++		usleep_range(10000, 11000);
++		if (!qca8084_reg_read32(bus, QCA8084_GLOBAL_CTL, &reg_val))
++			dev_info(bus->parent,
++				 "qca8084: GLOBAL_CTL after pulse = 0x%08x\n",
++				 reg_val);
++	}
++
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
 +	if (ret) {
 +		dev_warn(bus->parent,
@@ -465,6 +565,28 @@ hand, and is commented as such.
 +		qca8084_write_verify(bus, "WORK_MODE", QCA8084_WORK_MODE,
 +				     want, 0x3f);
 +	}
++
++	/* Bring up the clocks the branch enables below actually depend on.
++	 *
++	 * The switch core clock is enabled here and was not enabled anywhere
++	 * before. In switch mode the core has to be running for its own state
++	 * -- including the memory configuration written just above -- to be
++	 * writable at all.
++	 *
++	 * Parent select 0 is the 50 MHz XO for both, per mht_switch_core_pdata
++	 * and mht_sys_clk_pdata in the vendor driver, whose first entry is
++	 * { MHT_XO_CLK_RATE_50M, MHT_P_XO, 0 }.
++	 */
++	qca8084_rcg_commit(bus, "switch core", 0x004, 0);
++	qca8084_clk_enable(bus, QCA8084_SWITCH_CORE_CBCR);
++	qca8084_reset_pulse(bus, QCA8084_SWITCH_CORE_CBCR);
++
++	/* The four GEPHY sys clocks and the two SerDes sys clocks all hang off
++	 * this one RCG (0x1a4 in every one of their CLK_LOOKUP entries), so it
++	 * has to be committed once before their branches are enabled further
++	 * down.
++	 */
++	qca8084_rcg_commit(bus, "gephy/serdes sys", 0x1a4, 0);
 +
 +	/* Switch-mode memory configuration, the companion to WORK_MODE.
 +	 *
@@ -725,7 +847,7 @@ hand, and is commented as such.
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -367,6 +1046,33 @@
+@@ -367,6 +1168,33 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
