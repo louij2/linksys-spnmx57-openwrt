@@ -13,7 +13,14 @@ correctly at the right point in probe. What has not happened is the four QCA8084
 EPHYs appearing on the MDIO bus, so qca-ssdk's `chip_ver_get` still has nothing
 to find.
 
-Last image on the device: **build26** (`42e0540d424dddf5dd420fa5a34dad8c`).
+Last image on the device: **build28**, the release build
+(`70c8f52b95ba727e0b0f5a01274817a1`), published as
+[v0.1.0-wifi-only](https://github.com/louij2/linksys-spnmx57-openwrt/releases/tag/v0.1.0-wifi-only).
+It boots with zero warnings and one status line. The verbose bring-up
+instrumentation still exists and is gated on the DTS property
+`qcom,qca8084-preinit-debug`; add it next to `qcom,qca8084-preinit` to get back the
+read-back verdict for every write, the strap addresses, the gate value, the MARKER
+lines and the 32-address scan.
 
 ### Confirmed working (verified on hardware, not assumed)
 
@@ -113,10 +120,17 @@ So: the switch is alive and configurable, the addresses are assigned, and the
 EPHYs behind it are still not on the bus. Candidate next steps, roughly in order
 of how cheap they are:
 
-1. **Log whether the `0x0c800304` write actually landed.** It is currently written
-   blind -- there is no read-back and no log line. If those five bits do not stay
-   clear, that is the answer. One build cycle, and it is the last write in the
-   sequence whose effect has not been observed.
+1. ~~Log whether the `0x0c800304` write actually landed.~~ **DONE, and it lands.**
+   build27 added a read-back verdict to every write in the sequence. `0x0c800304`
+   reads `0x0000001f` before (all five holds asserted) and `0x00000000` after. So do
+   all the others: **27 writes, 27 landed.** That rules out the whole class of "a
+   write is silently doing nothing", which was the cheapest remaining explanation.
+
+   Two details worth keeping from that boot. Bit 31 of the per-EPHY clock registers
+   sets itself after each reset assert and clears after each release, so the silicon
+   is visibly acknowledging the writes rather than a bus returning stale values. And
+   two of the eight isolate registers (`0x0c800118`, `0x0c800138`) sit at
+   `0x80000000` rather than `0`.
 
 2. **Give the EPHYs longer to come up.** The scan runs ~130ms after the last write.
    Try a settle of a second or two with a rescan loop before concluding they are
@@ -134,23 +148,57 @@ of how cheap they are:
    `0x4a94d21c`, `0x4a94d694`, `0x4a94e004`, `0x4a94cb98`, `0x4a94cfb8`,
    `0x4a94cdb4`, `0x4a94cd04`, `0x4a94cd5c`, `0x4a94dca8`, `0x4a95a050`, `0x4a95a980`.
 
+## THE BIG SHORTCUT: the binary carries function names
+
+`strings` on `appsbl-mtd6.bin` returns actual vendor function names. This was found
+late and changes how everything below should be approached -- stop hunting for
+`FUN_4a94xxxx` by register constant and just locate the name string, find what
+references it, and decompile the function around that reference.
+
+```
+ipq_qca8084_hw_init            (also "Error: ipq_qca8084_hw_init failed")
+ipq_qca8084_work_mode_init
+_qca8084_interface_mode_init
+qca8084_switch_enable
+ipq_qca8084_link_update
+qca8084_port_speed_set / _duplex_set / _mac_speed_set / _rxmac_status_set / _txmac_status_set
+/ess-switch/qca8084_swt_info          <- a device tree path
+"GMAC%d:Get QCA8084_PHY "             <- the vendor successfully detecting a PHY
+"uniphy callibration time out!"       <- a UNIPHY calibration step we do nothing like
+"QCA8084-switch status:"
+```
+
+`qca8084_switch_enable`, `ipq_qca8084_work_mode_init` and the UNIPHY calibration are
+the three names that most plausibly cover the gap between "chip configured" and
+"PHYs answer MDIO". A partial run also placed `ipq_qca8084_work_mode_init` at
+`FUN_4a94d21c`, called from `FUN_4a94b918` at `0x4a94bb86` -- the same parent as the
+two functions already ported -- and suggested `FUN_4a94d694` is a reset-pulse-by-ID
+helper driven by a clock/reset table. Both are leads to confirm, not established
+facts. Note `FUN_4a94d21c` was on the "does not matter for detection" list.
+
 ## Ghidra
 
-Everything is local on the Mac in Docker. **This is what resolved every question
-this session**; hand-decoding Thumb-2 produced confident wrong answers before it.
+**Runs on `srv-openstack`, NOT on the Mac.** Five concurrent headless JVMs took the
+MacBook's load average to 51 and made it unusable; the box is 16GB and Docker
+Desktop is over-allocated on it already. srv-openstack has 80 cores and 246GB and
+the whole workspace is mirrored there. Ghidra was verified there against a known
+answer (it reproduces `DAT_4a94c7b4 = 0x0c800304`). Run it there and nowhere else.
 
-- Analysed project: `~/ghidra-workspace/project` (binary already imported + analysed)
-- Headless scripts: `~/ghidra-workspace/scripts/*.java`
-- Browser GUI: `docker start ghidra-gui` then open **http://localhost:6080/vnc.html**
+- Analysed project: `~/ghidra-workspace/project` on srv-openstack
+- Headless scripts: `~/ghidra-workspace/scripts/*.java` on srv-openstack
+- A project can only be opened by one process at a time, so for parallel work copy
+  it first: `cp -R ~/ghidra-workspace/project /tmp/gh-<key> && rm -f /tmp/gh-<key>/*.lock*`
+  (20MB a copy; delete them afterwards, they add up fast)
 - Run a headless script:
   ```bash
-  docker run --rm -v ~/ghidra-workspace/project:/project -v ~/ghidra-workspace/input:/input:ro \
-    -v ~/ghidra-workspace/scripts:/scripts:ro --entrypoint /ghidra/support/analyzeHeadless \
-    blacktop/ghidra:latest /project appsbl -process appsbl-mtd6.bin -noanalysis \
-    -scriptPath /scripts -postScript FindEphyEnable.java
+  ssh srv-openstack 'docker run --rm -v ~/ghidra-workspace/project:/project \
+    -v ~/ghidra-workspace/input:/input:ro -v ~/ghidra-workspace/scripts:/scripts:ro \
+    --entrypoint /ghidra/support/analyzeHeadless blacktop/ghidra:latest \
+    /project appsbl -process appsbl-mtd6.bin -noanalysis \
+    -scriptPath /scripts -postScript FindEphyEnable.java'
   ```
   Scripts must be `.java` -- `.py` needs PyGhidra which is not enabled in this image.
-  **macOS has no `timeout`**, so do not wrap the docker run in it.
+  **macOS has no `timeout`**, so do not wrap a local docker run in it.
   Script output arrives prefixed: strip with
   `sed 's/^INFO  <Script>.java> //; s/ (GhidraScript)  $//'`.
 
