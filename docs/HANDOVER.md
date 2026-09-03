@@ -1,187 +1,152 @@
-# Handover prompt
+# Handover: Linksys SPNMX57 OpenWrt Ethernet port
 
-Paste this into a fresh session to pick this project up.
+Repo: `~/Repositories/linksys-spnmx57-openwrt` -> `github.com/louij2/linksys-spnmx57-openwrt` (public)
+Build host: `srv-openstack`, tree at `~/spnmx57/openwrt` (build in Docker image `owrt-deb12`)
 
----
+## Where things stand
 
-Work on getting Ethernet working on OpenWrt on my **Linksys SPNMX57** (Community
-Fibre supplied, Qualcomm IPQ5018). Read `docs/investigation.md`, `docs/hardware.md`,
-`docs/build.md`, `docs/mdio-scan.md` and `docs/preinit-port.md` first, then this.
+The device boots OpenWrt fine. Wi-Fi, LEDs, buttons, flash, serial, SSH, sysupgrade
+with self-recovery all work. **The one remaining blocker is Ethernet**: the four
+QCA8084 EPHYs behind the QCA8386 switch do not answer MDIO, so qca-ssdk's
+`chip_ver_get` never finds the switch (`regi_init: no device found!`).
 
-**Repo:** `~/Repositories/linksys-spnmx57-openwrt`, GitHub
-`louij2/linksys-spnmx57-openwrt` — **now PUBLIC**. Forum thread:
-https://forum.openwrt.org/t/openwrt-support-for-linksys-spnmx57-variants/231653
-(a full progress update is drafted at `docs/upstream/forum-update.md` — check
-whether it's been posted yet before drafting another).
+### Confirmed working (verified on hardware, not assumed)
 
-**CURRENT STATE (2026-09-03):** OpenWrt boots on the SPNMX57, Wi-Fi works, LuCI
-works, self-recovering flash cycle is proven reliable. Ethernet does not work
-yet. **Serial console now works both directions** (TX and RX) — this took most
-of a session to get right; see "Serial console" below before touching wiring.
+- **The QCA8386 32-bit indirect register protocol**, reverse engineered from the
+  vendor U-Boot via Ghidra, then proven bidirectionally on the live device:
+  read EPHY_CFG -> `0x00318820` consistently across boots, and a write to clear
+  bits [21:20] read back correctly as `0x00018820`. See
+  `docs/uboot-qca8084-protocol.md`.
 
-**THE U-BOOT LEAD — chased, partly resolved, read `docs/uboot-qca8084-protocol.md`
-in full before touching this again:**
+  ```
+  read32(addr):  write(phy 0x18, reg 0x0c, (addr & 0xffffff) >> 8)   // page select
+                 udelay(100)
+                 lo = read(phy 0x10, addr & 0x1c)
+                 hi = read(phy 0x10, (addr & 0x1c) + 2)
+                 return lo | (hi << 16)
+  write32(addr, val): same page select, then write lo/hi to the same two regs
+  ```
+  Every transaction is plain Clause 22. No new low-level MDIO code needed.
 
-Dumped `0:APPSBL` (mtd6) and disassembled it (Apple's own LLVM `objdump`,
-`--triple=thumbv7-none-eabi` — it is Thumb-2, decoding it as ARM32 produces
-convincing-looking garbage, that cost real time to catch). Confirmed by direct
-byte comparison against mainline's own `mdio-ipq4019.c`:
+- **The EPHY strap addresses are 0,1,2,3** (decoded live from EPHY_CFG), NOT the
+  1,2,3,4 the vendor's own DTS declares. `dts/ipq5018-spnmx57.dts` is fixed.
 
-- The MDIO register offsets vendor U-Boot uses (`MODE_REG=0x90040`,
-  `ADDR_REG=0x90044`, `DATA_WRITE_REG=0x90048`, `DATA_READ_REG=0x9004c`,
-  `CMD_REG=0x90050`) are **byte-identical** to mainline's own constants. Same
-  controller, not a different bus
-- The per-port calibration step (writes analog trim values into each EPHY's
-  own MDIO debug registers `0x1D`/`0x1E`) is confirmed to use **plain Clause
-  22**, which mainline's existing `ipq4019_mdio_read_c22`/`write_c22` already
-  implement correctly. This part is solid and directly portable, no new
-  low-level protocol needed
-- U-Boot never programs new addresses into `EPHY_CFG`, only reads whatever is
-  already there. Whether that is a hardware default of `1,2,3,4` or set
-  earlier in the boot chain than this binary covers is **not confirmed**
+- **LEDs**: all three (`red/green/blue:power`) register and are controllable.
+- **Buttons**: `gpio_button_hotplug` loads, DTS nodes present, gpio27/28 correctly
+  configured (input, pull-up, idle high = active low). Not physically press-tested;
+  that driver fires uevents rather than registering an input device, so checking
+  `/proc/bus/input/devices` is the wrong test and will look empty even when fine.
 
-**What is NOT resolved, and where I stopped deliberately:** the exact 32-bit
-indirect read/write protocol for `EPHY_CFG`/`SERDES_CFG` themselves. Continued
-hand-tracing surfaced a real self-caught mistake (mis-attributing a register's
-role mid-analysis) — hand-decoding raw Thumb-2 without cross-reference tooling
-is genuinely error-prone, and I chose to document the uncertainty honestly
-rather than ship a kernel patch built on a possibly-wrong guess.
-`docs/uboot-qca8084-protocol.md` recommends **Ghidra** for finishing this
-properly — free, scriptable, builds real call graphs and xrefs, would resolve
-this in one clean pass. Load `collected/uboot/appsbl-mtd6.bin`, functions of
-interest are at vaddr `0x4a94c4dc` (32-bit register read) and `0x4a94c524`
-(32-bit register write). The full disassembly and mainline's driver source for
-comparison are both committed in `collected/uboot/`.
+### The current patch
 
-**WHAT WE KNOW, in order of discovery:**
+`patches/0919-net-mdio-ipq4019-add-QCA8084-preinit-for-SPNMX57.patch`, applied to
+`target/linux/qualcommax/patches-6.12/`. Gated on `qcom,qca8084-preinit` in the
+`&mdio1` DTS node, so no other board is affected. It implements, transcribed from
+Ghidra decompilation of `FUN_4a94c630`:
 
-1. **The board.** QCA8386 switch, four QCA8084 EPHYs at MDIO 1-4 on `mdio@90000`,
-   one SoC MAC (MAC1) on a forced 2.5G SGMII+ link, no hardware WAN port. Full
-   detail + vendor DTB extraction recipe (no hardware needed) in
-   `docs/hardware.md`
-2. **Two DTS gotchas, both fixed, both required:** `&mdio0` must stay enabled
-   even though MAC0 drives no socket (SSDK uses it as its default bus lookup);
-   `&switch` must keep `port@0` for MAC0's internal GE PHY (ipq5018's
-   `chip_ver_get` falls through to reading it). See `docs/build.md`
-3. **Mainline QCA8084 PHY package route is a dead end on `qualcommax/ipq50xx`**
-   — needs a PCS/uniphy clock provider that doesn't exist on this target (it
-   does exist on `qualcommbe`/IPQ9574, and master has since moved qualcommax to
-   stmmac/DSA + a `qca-uniphy` PCS driver on kernel 6.18 — revisit if this
-   stalls, that may be the real long-term answer)
-4. **SSDK route: `MHT_ENABLE=enable` works now.** Was compiled out
-   (`MHT_ENABLE=disable` for every subtarget); enabling it needed a real patch —
-   `qca808x.c`'s `match_phy_device` still uses the pre-6.12 one-arg signature,
-   kernel 6.12 added a second param. Patch is in
-   `package/kernel/qca-ssdk/patches/100-qca808x-match_phy_device-6.12-signature.patch`.
-   **This is a genuine upstream qca-ssdk bug**, worth a standalone PR
-5. **With MHT enabled, `ssdk_dt_parse[1446]:INFO:switch node is qca8386!`
-   appears** — SSDK recognises the node. But `chip_ver_get` still fails:
-   `qca_detect_phyid()` reads a plain MII ID at the DTS `phy_address` values
-   (1-4), and the chip doesn't answer there yet
-6. **Measured, not inferred, via a 32-address kernel MDIO scan already in the
-   DTS:** no valid PHY ID anywhere on `mdio@90000`. `0x04/0x05` and `0x10-0x13`
-   read `0x00000000`, `0x14-0x1f` read a repeating `0xb00eb00e`, everything else
-   is `0xffff`. QCA8084 would be `0x004dd180`. See `docs/mdio-scan.md` for the
-   full table and what it rules in/out
-7. **Root cause, confirmed by code reading:** the EPHY addresses come from a
-   strap register (`EPHY_CFG`, `0xC90F018`) that qca-ssdk **only ever reads**
-   (`qca_mht_ephy_addr_get`, one call site, `grep` the whole tree to confirm)
-   and never writes. The vendor does the strap + clock init in the **MDIO bus
-   driver** at probe time (`qca_mht_preinit()` in QSDK's `mdio-qca.c`, not
-   public). OpenWrt binds mainline `drivers/net/mdio/mdio-ipq4019.c`, which has
-   none of it
-8. **⚠ Safety finding: `MHT_ENABLE=enable` without also fixing the MDIO driver
-   is a memory-safety bug, not just non-functional.** The SSDK expects
-   `bus->priv` to be `struct qca_mdio_data` (with `sw_read`/`sw_write` function
-   pointers ~64 bytes in); OpenWrt's `ipq4019_mdio_data` is a much smaller,
-   different struct, allocated at its own smaller size via
-   `devm_mdiobus_alloc_size`. Any code path that reaches `qca_mii_raw_read`
-   reads past the allocation and calls garbage as a function pointer. Our image
-   has not crashed only because `chip_ver_get` fails earlier via the normal
-   `mdiobus_read()` API, which never reaches that path. **Full scope of what the
-   real `mdio-ipq4019.c` port needs is in `docs/preinit-port.md`** — do not skip
-   reading it, the struct layout mismatch is the part most likely to be gotten
-   wrong
+1. clock enable (set bit 0) + reset pulse (set bit 2, wait 21ms, clear) on
+   `0x0c8001a8` and `0x0c8001ac`
+2. clear bit 0 across eight registers, `0x0c800058` to `0x0c800158` step `0x20`
+   (meaning unconfirmed, transcribed as-is)
+3. same clock-enable + reset-pulse on the four per-EPHY domains
+   `0x0c8001b0/b4/b8/bc`
+4. per-port calibration: read a source register per port
+   (`0x0c900048` / `0x60` / `0x68` / `0x5c`), extract two bitfields, write them
+   into that EPHY's own MDIO debug registers `0x1d`/`0x1e`
+5. clear EPHY_CFG bits [21:20]
 
-**SERIAL CONSOLE — now fully working, read this before touching wiring again:**
+**Currently the vendor's gate check is deliberately bypassed** (it reads
+`0x00080000` on this hardware; the vendor condition wants field value 1 or 2, so
+the vendor's own code would skip calibration here). Bypassing it was a
+diagnostic, and it should probably be restored once the real blocker is found.
 
-Both directions confirmed working as of this session's end. It took a long,
-frustrating debugging arc to get here (garbled captures from a termios bug,
-silent TX for most of the session, a physical header hunt across at least 3
-pin sets). Key lessons, so nobody repeats them:
+## THE IMMEDIATE NEXT STEP
 
-- **Hold the fd open BEFORE running `stty`.** `cat`/opening the device node
-  alone silently resets macOS's termios speed to 9600, even after you `stty`
-  it. Pattern that works: `exec 3<>$PORT` first, then `stty -f $PORT 115200 ...`
-  while the fd is held, THEN start reading from fd 3. Every capture in
-  `collected/` from before this was understood is suspect
-- **The adapter enumerates as both `/dev/cu.usbserial-NNNN` and
-  `/dev/cu.wchusbserial-NNNN`** (Apple's built-in driver and the WCH kext both
-  claim it). Use the `wchusbserial` one; check `ls /dev/cu.*serial*` after every
-  physical reconnect, the number changes
-- **GND must not move once established.** A floating ground produces random
-  low-value noise on every line (we saw stray bytes like `0x00`, `0xb00e...`
-  patterns) that looks deceptively like "something is connected but wrong,"
-  when it is actually "nothing is connected properly." If TX or RX goes silent
-  or noisy after moving wires, check ground first
-- **The single best test is: reboot + spam Enter for the full boot, one
-  bash invocation, fd held open the whole time.** A clean multi-KB boot log
-  proves RX+GND. Autoboot stopping into a `IPQ5018#` prompt proves TX. Testing
-  against an already-booted OS (sending Enter and hoping for a shell prompt) is
-  a much weaker signal — silence there is ambiguous, silence through a genuine
-  reboot is not
-- Device address moves on every reboot (DHCP lease). Find it by MAC
-  `02:11:22:33:44:22` on the `10.0.0.0/24` LAN, not a fixed IP
+**`build22` was running on `srv-openstack` when this session ended.** Check it:
 
-**IMAGES:**
+```bash
+ssh srv-openstack 'docker ps -q --filter ancestor=owrt-deb12 | grep -q . && echo building || md5sum ~/spnmx57/openwrt/bin/targets/qualcommax/ipq50xx/*sysupgrade.bin'
+```
 
-`bootcount` is deliberately left WITHOUT a `linksys,spnmx57` case in the
-current test image — this makes it self-recovering (3 boot attempts, U-Boot
-flips back to the known-good SPNMX56 slot on the 4th power-on). Do not add that
-case back until Ethernet actually works end to end; it is the safety net.
-`qca-nss-dp` is also currently excluded (`CONFIG_PACKAGE_kmod-qca-nss-dp` unset
-in `.config`, NOT via `DEVICE_PACKAGES -pkg` which silently does not work on
-this target) because it panics the kernel when it initialises against a switch
-device the SSDK never registered. Put it back once `chip_ver_get` succeeds.
+It contains a fix that has NOT yet been tested on hardware. Flash it and read
+dmesg. **Success looks like `EPHY_CFG = 0x00318820` in the log (a real value)
+rather than `0xffffffff`, and ideally MDIO addresses 0-3 no longer "missing".**
 
-Build host: `srv-openstack` (tailnet), builds inside a `owrt-deb12` Docker
-image because the host's own gcc 15/glibc 2.42 cannot compile OpenWrt's
-bundled m4/gnulib. `~/spnmx57/openwrt` there is checked out at `05feabfd09`,
-matching exactly what the flashed unit runs — do not update it casually,
-feed/core version drift breaks LuCI (hit this once, see `docs/build.md`).
+### Two bugs found and fixed this session, both mine, neither hardware
 
-**RECOVERY, confirmed multiple times this session:** `auto_recovery=yes`,
-`boot_part_ready=3`. Three boot attempts on the inactive slot, flips back on
-the 4th power-on. `sysupgrade -F` is required (board name mismatch) and safe;
-never `-n` (wipes the Wi-Fi config that is the only way back in), never `-s`
-(overwrites the known-good slot), never the `factory.bin` via sysupgrade.
+1. **Ordering**: `qca8084_preinit()` originally ran AFTER `of_mdiobus_register()`.
+   That function is what scans the DTS `ethernet-phy@N` children and emits the
+   "MDIO device at address N is missing" lines, so the scan was running before
+   the chip was ever clocked. Moved before it. Verified with explicit
+   `MARKER` log lines rather than inferred from timestamps.
 
-**NEXT STEPS, in order:**
+2. **Uninitialised mutex** (this is what build22 fixes): `mutex_init(&bus->mdio_lock)`
+   happens INSIDE `__mdiobus_register()` (line ~740 of `drivers/net/phy/mdio_bus.c`),
+   NOT at allocation. So once preinit moved earlier, every `mdiobus_read`/`mdiobus_write`
+   was locking an uninitialised mutex — undefined behaviour, and every transaction
+   read back `0xffffffff`. Fixed by calling `bus->read`/`bus->write` **directly**;
+   safe here because the bus is not yet visible to anything else so there is nothing
+   to race with. `bus->reset(bus)` is also called explicitly at the top of preinit,
+   since the controller's own clock/divider setup normally happens during registration.
 
-1. Dump `0:APPSBL` (mtd6) and hunt for the `GMAC1:Get QCA8084_PHY` routine —
-   likely the fastest path to the real register sequence
-2. With that in hand (or failing that), write the `mdio-ipq4019.c` patch per
-   `docs/preinit-port.md`: DT-gated `bus->priv` layout fix, `sw_read`/`sw_write`,
-   `preinit` doing the EPHY_CFG/SERDES_CFG strap + clock init
-3. Test via the 32-address MDIO scan already in the DTS — success is
-   `0x004dd180` at addresses 1-4
-4. Re-enable `qca-nss-dp`, confirm `chip_ver_get` succeeds and a netdev appears
-5. Does the QCA8386 forward by default; socket-to-port mapping
-6. Re-enable the `bootcount` case, remove the diagnostic scan, ship a real
-   image; upstream everything (the qca808x.c fix alone is worth its own PR)
+**If build22 still shows `0xffffffff`**, the remaining suspect is that something
+else in registration is needed before transactions work at this point in probe();
+the fallback is to revert to running preinit AFTER `of_mdiobus_register()` (where
+reads demonstrably worked and returned `0x00318820`) and instead remove the 32
+diagnostic `ethernet-phy@N` children from the DTS entirely, doing the address scan
+manually with `mdiobus_read` inside preinit after the bring-up sequence.
 
-**HOW I LIKE TO WORK:** work the list without stopping to ask between items.
-When something needs me, give the exact command, say what "worked" looks like,
-then carry on and collect asks at the end. Verify on the actual hardware rather
-than assuming. No dashes in prose you write for me. I now have a global rule in
-`~/.claude/CLAUDE.md` asking you to proactively flag when a model or effort
-switch would help — keep doing that.
+## Ghidra (set up this session, keep using it)
 
-**Ongoing outage note (2026-09-03):** Anthropic status page reported elevated
-errors on Opus 5/4.8/4.6 and Fable 5.1 starting ~13:26 UTC, still under
-investigation as of the last check. If Opus is unavailable, Sonnet 5 handled
-this entire session's hardware/kernel work fine — don't treat model
-availability as a blocker, just note which one you're on.
+Everything is local on the Mac in Docker. **This is what resolved the protocol**;
+hand-decoding Thumb-2 produced a confident, wrong answer twice before this.
 
-**Related, do not conflate:** `louij2/tp-link-m7350-signal-mod` (public) and
-`louij2/m7350-openwrt` (private, stalled) are a different device.
+- Analysed project: `~/ghidra-workspace/project` (binary already imported + analysed)
+- Headless scripts: `~/ghidra-workspace/scripts/*.java`
+- Browser GUI: `docker start ghidra-gui` then open **http://localhost:6080/vnc.html**
+- Run a headless script:
+  ```bash
+  docker run --rm -v ~/ghidra-workspace/project:/project -v ~/ghidra-workspace/input:/input:ro \
+    -v ~/ghidra-workspace/scripts:/scripts:ro --entrypoint /ghidra/support/analyzeHeadless \
+    blacktop/ghidra:latest /project appsbl -process appsbl-mtd6.bin -noanalysis \
+    -scriptPath /scripts -postScript DecompileTargets.java
+  ```
+  Scripts must be `.java` — `.py` needs PyGhidra which is not enabled in this image.
+
+Key addresses in `collected/uboot/appsbl-mtd6.bin`: `0x4a94c4dc` read32,
+`0x4a94c524` write32, `0x4a94c35c` raw write, `0x4a94c3d0` raw read,
+`0x4a94c630` the whole clock/reset/calibrate routine, `0x4a94c568` clk enable,
+`0x4a94c57e` reset pulse.
+
+Functions already decompiled and found NOT to matter for detection (they are
+U-Boot-internal bookkeeping or post-detection port/traffic config):
+`0x4a94d21c`, `0x4a94d694`, `0x4a94e004`, `0x4a94cb98`, `0x4a94cfb8`,
+`0x4a94cdb4`, `0x4a94cd04`, `0x4a94cd5c`, `0x4a94dca8`, `0x4a95a050`, `0x4a95a980`.
+
+## Build / flash / test loop
+
+```bash
+# build
+ssh srv-openstack 'cd ~/spnmx57/openwrt && rm -f bin/targets/qualcommax/ipq50xx/*.bin && \
+  rm -rf build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq50xx/linux-6.12.57/.prepared* \
+         build_dir/target-aarch64_cortex-a53_musl/linux-qualcommax_ipq50xx/linux-6.12.57/drivers/net/mdio && \
+  nohup docker run --rm -u 1000 -v ~/spnmx57/openwrt:/build -w /build owrt-deb12 nice -n 15 make -j24 > /tmp/buildN.log 2>&1 &'
+```
+
+**Patch generation gotcha that bit twice**: always diff against the true pristine
+source at `/tmp/mdio-ipq4019-PRISTINE.c` on srv-openstack, NEVER against the
+`build_dir` copy (which already has the patch applied — diffing against it produces
+a patch whose context does not match pristine, and the build fails at `.prepared`).
+Always `patch -p1 --dry-run` against a pristine copy before building.
+
+Device: find by MAC `02:11:22:33:44:22`, usually `10.0.0.70`, address moves on reboot.
+Flash: scp image to `/tmp/spnmx57.bin`, `sysupgrade -T -F` to dry-run, then
+`setsid sysupgrade -F -v /tmp/spnmx57.bin` (plain `setsid`, not `setsid nohup`).
+It alternates slots automatically and self-recovers, so a bad image is not fatal.
+
+## Still open after Ethernet
+
+- Restore the vendor gate check and remove the diagnostic MDIO scan for a real image
+- Re-enable `qca-nss-dp` once `chip_ver_get` succeeds
+- Upstream the `qca808x.c` 6.12 signature fix as its own PR
+- Parked: GL.iNet-style custom web UI
