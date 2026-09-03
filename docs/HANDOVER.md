@@ -19,31 +19,39 @@ works, self-recovering flash cycle is proven reliable. Ethernet does not work
 yet. **Serial console now works both directions** (TX and RX) — this took most
 of a session to get right; see "Serial console" below before touching wiring.
 
-**THE BIGGEST LEAD, chase this first:**
+**THE U-BOOT LEAD — chased, partly resolved, read `docs/uboot-qca8084-protocol.md`
+in full before touching this again:**
 
-With a live U-Boot prompt (first time all session), the vendor's own U-Boot
-printed this during its own network bring-up:
+Dumped `0:APPSBL` (mtd6) and disassembled it (Apple's own LLVM `objdump`,
+`--triple=thumbv7-none-eabi` — it is Thumb-2, decoding it as ARM32 produces
+convincing-looking garbage, that cost real time to catch). Confirmed by direct
+byte comparison against mainline's own `mdio-ipq4019.c`:
 
-```
-MAC0 addr:0:11:22:33:44:55
-PHY ID1: 0x4d
-PHY ID2: 0xd0c0
-MAC1 addr:0:11:22:33:44:56
-GMAC1:Get QCA8084_PHY
-eth0
-eth1
-```
+- The MDIO register offsets vendor U-Boot uses (`MODE_REG=0x90040`,
+  `ADDR_REG=0x90044`, `DATA_WRITE_REG=0x90048`, `DATA_READ_REG=0x9004c`,
+  `CMD_REG=0x90050`) are **byte-identical** to mainline's own constants. Same
+  controller, not a different bus
+- The per-port calibration step (writes analog trim values into each EPHY's
+  own MDIO debug registers `0x1D`/`0x1E`) is confirmed to use **plain Clause
+  22**, which mainline's existing `ipq4019_mdio_read_c22`/`write_c22` already
+  implement correctly. This part is solid and directly portable, no new
+  low-level protocol needed
+- U-Boot never programs new addresses into `EPHY_CFG`, only reads whatever is
+  already there. Whether that is a hardware default of `1,2,3,4` or set
+  earlier in the boot chain than this binary covers is **not confirmed**
 
-**`GMAC1:Get QCA8084_PHY`** — the vendor's U-Boot successfully identifies the
-QCA8084 on MAC1, independent of Linux/qca-ssdk entirely. This is proof the chip
-can be brought up correctly, and the U-Boot binary (`0:APPSBL`, mtd6) almost
-certainly contains the exact strap/clock sequence we've been trying to
-reverse-engineer for `mdio-ipq4019.c`. **Dump mtd6 and disassemble/string-search
-it before writing any more driver code by hand** — this could shortcut the whole
-remaining port. (We already disassembled part of mtd6 once this session, for
-the bootcount ARM code — same technique applies: pull the partition, load as
-raw ARM binary, find the GMAC1/QCA8084 init routine, read out the actual
-register writes to `0xC90F018`/`0xC90F014`.)
+**What is NOT resolved, and where I stopped deliberately:** the exact 32-bit
+indirect read/write protocol for `EPHY_CFG`/`SERDES_CFG` themselves. Continued
+hand-tracing surfaced a real self-caught mistake (mis-attributing a register's
+role mid-analysis) — hand-decoding raw Thumb-2 without cross-reference tooling
+is genuinely error-prone, and I chose to document the uncertainty honestly
+rather than ship a kernel patch built on a possibly-wrong guess.
+`docs/uboot-qca8084-protocol.md` recommends **Ghidra** for finishing this
+properly — free, scriptable, builds real call graphs and xrefs, would resolve
+this in one clean pass. Load `collected/uboot/appsbl-mtd6.bin`, functions of
+interest are at vaddr `0x4a94c4dc` (32-bit register read) and `0x4a94c524`
+(32-bit register write). The full disassembly and mainline's driver source for
+comparison are both committed in `collected/uboot/`.
 
 **WHAT WE KNOW, in order of discovery:**
 
