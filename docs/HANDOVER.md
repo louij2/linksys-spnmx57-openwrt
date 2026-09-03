@@ -138,13 +138,28 @@ bus scan         only 0x10-0x1f answer, PHY ID varies with page state
    the dvs bits "need to be set one by one" for a hardware reason, which we do.
    Something gates this register and finding out what may be the whole answer.
 
-2. **The SKU fuse reads `0x265`**, which is not QCA8082 `0x1dc`, QCA8084 `0x1dd`,
-   QCA8085 `0x1de` or QCA8386 `0x1df`. Before concluding anything: the vendor
-   drops the MDIO clock to its slowest setting (`ssdk_miibus_freq_set(..., 0xff)`)
-   before reading fuse rows and restores it after, because "fuse register need use
-   lower mdio clock to read". We do not. **Redo this read with a slow MDIO clock**
-   before treating it as meaningful. If it still reads `0x265` after that, the
-   assumption that this is a QCA8386 needs re-examining from scratch.
+2. **The SKU fuse reads `0x265`, and that is now confirmed real.** It was re-read
+   the vendor's way, with the MDIO clock dropped to its slowest divider and then
+   restored, exactly as `qca_mht_sku_check()` does. Both reads agree:
+
+   ```
+   SKU fuse at slow mdc (mode 0x0001503f -> 0x000150ff): row0 = 0x00000265, sku 0x00265
+   SKU fuse at normal mdc:                               row0 = 0x00000265, sku 0x00265
+   ```
+
+   So it is not a clock artefact. `0x265` is none of QCA8082 `0x1dc`, QCA8084
+   `0x1dd`, QCA8085 `0x1de` or QCA8386 `0x1df`. **This part is a variant the
+   vendor driver does not enumerate.**
+
+   It does not by itself block anything: `qca_mht_sku_switch_core_enabled()`
+   returns false only for 8082/8084/8085, so an unrecognised SKU is treated as
+   switch-capable. But it does mean the "this is a QCA8386" assumption rests on
+   the vendor device tree rather than on the silicon, and every mode decision
+   made so far inherits that. Worth weighing before spending more cycles on
+   switch mode specifically.
+
+   The neighbouring fuse row reads `row2 = 0x00080000`, which is the same value
+   the calibration gate uses, so the fuse reads themselves are coherent.
 
 ## Other things to try
 
