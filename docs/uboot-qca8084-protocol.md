@@ -81,53 +81,88 @@ live chip** — whether the 4 fields already hold `1,2,3,4` before any of this
 runs is unknown; it could be a hardware/silicon default, or set earlier in
 the boot chain (PBL/SBL1) than this binary covers.
 
-## UNCERTAIN: exactly how `EPHY_CFG`/`SERDES_CFG` themselves are read and written
+## RESOLVED — decompiled with Ghidra, no remaining ambiguity
 
-This is the part to be honest about. Initial trace suggested the 32-bit
-switch-internal register access (as opposed to the plain-C22 calibration
-writes above) maps cleanly onto mainline's Clause 45 support
-(`read_c45`/`write_c45`, which already exist and already work) — the
-command-code sequence (`0x100` then `0x101` for write, `0x100` then `0x102`
-for read) matches mainline's `MDIO_CMD_ACCESS_CODE_C45_ADDR/_WRITE/_READ`
-exactly.
+The earlier draft of this page stopped here, honestly flagging a hand-traced
+guess as unreliable. Ran Ghidra headless (Docker, `blacktop/ghidra`, local,
+no cloud) against `appsbl-mtd6.bin` and decompiled the four functions
+directly rather than continuing to hand-read Thumb bytes. The ELF loader
+auto-detected `ARM:LE:32:v8` and placed everything at the correct addresses
+with no manual base-address work needed.
 
-**But re-tracing the actual caller (the `chip_ver_get`-adjacent read wrapper
-at `0x4a94c4dc`) shows something more elaborate**: it makes a first call into
-what looked like the write primitive (`0x4a94c35c`) with an argument that does
-not look like a normal Clause 45 `(mmd, reg)` pair, followed by two separate
-calls into the read primitive (`0x4a94c3d0`) at addresses that differ by `2`,
-combined as `low16 | (high16 << 16)`. That shape (address-latch write, then
-two 16-bit reads at a `+2` stride) is a real, known pattern for 32-bit access
-over a 16-bit MDIO register space — but which of the several plausible
-concrete bit-packings applies is genuinely not nailed down here, and I caught
-one internal mis-attribution partway through this trace (assigning a
-"phy-address-like" role to a register value that turned out on closer reading
-to plausibly be something else). That is exactly the kind of error that is
-easy to make and hard to notice when hand-reading Thumb bytes serially without
-a proper cross-referencing disassembler, and I would rather flag it than
-present a guess as fact.
+**The earlier "Clause 45" guess was analyzing the wrong branch of `c35c`/
+`c3d0` entirely** — that branch (gated on bit 30 of the `reg` argument) is
+real code, used elsewhere in this binary, but our target functions never set
+that bit, so it never executes for `EPHY_CFG`/`SERDES_CFG` access. Every
+transaction our path actually takes is **plain Clause 22**.
 
-## Recommended next step, before writing the kernel patch
+Decompiled `0x4a94c4dc` (32-bit read) and `0x4a94c524` (32-bit write) in full
+(reproduced here after variable renaming for clarity; the raw decompiler
+output with `FUN_`/`DAT_` names is in `collected/uboot/`):
 
-**Get a real decompiler onto the analysis, not further hand-tracing.**
-Ghidra (free, scriptable, handles Thumb-2/ARM interworking and builds proper
-call graphs and xrefs automatically) would resolve the remaining ambiguity in
-one clean pass rather than the error-prone manual approach used here. Load
-`collected/uboot/appsbl-mtd6.bin` as raw ARM, base address `0x4a920000` minus
-`0x12000` (i.e. image base `0x4a90e000`, since Ghidra wants the base for
-offset 0, not the LOAD segment's vaddr directly — check this against the ELF
-program header when loading), and let it auto-analyze. The two functions to
-retarget are at vaddr `0x4a94c4dc` (32-bit register read) and `0x4a94c524`
-(32-bit register write); a proper disassembler will show their true parameter
-types and the exact bit-packing without the risk of manual mis-tracing.
+```c
+uint32_t switch_reg_read32(uint32_t logical_addr)
+{
+    uint32_t page = (logical_addr & 0xffffff) >> 8;
+    uint32_t slot = logical_addr & 0x1c;
 
-Alternatively: the calibration-loop part alone (solid, above) could be tried
-as a standalone experiment using only mainline's existing, already-correct
-C22 read/write — **if** the hypothesis that EPHY_CFG already holds `1,2,3,4`
-by hardware default turns out to be true, reading it is not even needed to
-try the calibration writes. That has not been tested and is a cheap, low-risk
-next step in its own right, independent of resolving the `EPHY_CFG` protocol
-question.
+    mdio_write(phy=0x18, reg=0x0c, val=page);   /* page select */
+    udelay(100);
+    uint16_t lo = mdio_read(phy=0x10, reg=slot);
+    uint16_t hi = mdio_read(phy=0x10, reg=slot + 2);
+    return lo | (hi << 16);
+}
+
+void switch_reg_write32(uint32_t logical_addr, uint32_t value)
+{
+    uint32_t page = (logical_addr & 0xffffff) >> 8;
+    uint32_t slot = logical_addr & 0x1c;
+
+    mdio_write(phy=0x18, reg=0x0c, val=page);   /* page select, same as read */
+    udelay(100);
+    mdio_write(phy=0x10, reg=slot,     val=value & 0xffff);
+    mdio_write(phy=0x10, reg=slot + 2, val=value >> 16);
+}
+```
+
+Where `mdio_write`/`mdio_read` are literally `bus->write`/`bus->read` —
+**plain Clause 22 MDIO transactions**, the exact thing mainline's existing
+`ipq4019_mdio_write_c22`/`read_c22` already implement correctly today. No new
+low-level register-poke code is needed, and critically: **no `bus->priv`
+struct-layout compatibility hack is needed for this piece at all.** This can
+be built entirely on the standard `mdiobus_write()`/`mdiobus_read()` kernel
+API against the unmodified driver.
+
+Also decompiled the two low-level helpers these call, confirming the whole
+chain end to end:
+
+- `FUN_4a94c32c` (busy poll): loops up to 1000 times checking
+  `*CMD_REG & 0x10000`, i.e. bit 16 — **exactly** mainline's
+  `MDIO_CMD_ACCESS_BUSY = BIT(16)`. Functionally identical to
+  `ipq4019_mdio_wait_busy()`, just iteration-counted instead of
+  timeout-based.
+- `FUN_4a960708` (the `100`-argument delay call): a standard chunked
+  microsecond delay loop. Confirms the `udelay(100)` after page-select above.
+
+**Sanity check against the two known addresses**, confirming the page/slot
+split makes sense:
+
+| register | logical address | page (bits 23:8) | slot (bits 4:2, ×4) |
+|---|---|---|---|
+| `EPHY_CFG` | `0x0C90F018` | `0x90F0` | `0x18` |
+| `SERDES_CFG` | `0x0C90F014` | `0x90F0` | `0x14` |
+
+Same page, different 4-byte slot within it — exactly what "one 256-byte page,
+individually addressed 32-bit registers every 4 bytes" predicts, and matches
+the two registers being adjacent-but-distinct fields the vendor source treats
+as siblings.
+
+**The calibration loop's PHY debug-register writes (`0x1D`/`0x1E` at each
+EPHY's own address) are separately confirmed the same way** — they call the
+identical `c35c` primitive but with the EPHY's real address (1/2/3/4, not the
+fixed `0x18`/`0x10` pseudo-addresses) and a register number without bit 30
+set, so they take the same plain-C22 path. Nothing special needed there
+either.
 
 ## What NOT to do
 

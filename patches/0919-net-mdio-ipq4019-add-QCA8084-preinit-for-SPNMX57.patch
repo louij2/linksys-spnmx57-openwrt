@@ -1,0 +1,120 @@
+From: SPNMX57 port
+Subject: [PATCH] net: mdio: ipq4019: add opt-in QCA8084 preinit (read-only first cut)
+
+Reverse engineered from the vendor U-Boot APPSBL partition on a Linksys
+SPNMX57 (Ghidra decompilation, not a datasheet); see
+docs/uboot-qca8084-protocol.md in louij2/linksys-spnmx57-openwrt for the
+full trace and how it was obtained.
+
+The QCA8386 switch exposes its internal 32-bit register space over plain
+Clause 22 MDIO, indirectly, via a fixed page-select/data pseudo-PHY pair.
+This is the same MDIO controller mainline already drives correctly; no new
+low-level transaction primitive is needed, only this indirect addressing
+on top of the existing read_c22/write_c22.
+
+Deliberately read-only for now: reads EPHY_CFG (which holds each of the
+four EPHYs current strap address as a 5-bit field) and logs it. The
+vendors own U-Boot never writes new addresses into this register either,
+only reads it, so whether the addresses already default to 1,2,3,4 in
+hardware is an open question this settles before anything writes to a
+switch internal register at all.
+
+Opt-in via qcom,qca8084-preinit on the mdio node; no effect on any other
+board.
+---
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -8,6 +8,7 @@
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+ #include <linux/of_address.h>
++#include <linux/of.h>
+ #include <linux/of_mdio.h>
+ #include <linux/phy.h>
+ #include <linux/platform_device.h>
+@@ -48,6 +49,75 @@
+ 
+ #define IPQ_PHY_SET_DELAY_US	100000
+ 
++/*
++ * QCA8084/QCA8386 preinit, reached only when the mdio node carries
++ * qcom,qca8084-preinit in the DTS. Reverse engineered from the vendor
++ * U-Boot's APPSBL partition (Ghidra decompilation, not a datasheet) --
++ * see docs/uboot-qca8084-protocol.md in the linksys-spnmx57-openwrt repo.
++ *
++ * The QCA8386 switch exposes its internal 32-bit register space over plain
++ * Clause 22 MDIO, indirectly, via a fixed pseudo-PHY pair:
++ *   - write the page (bits [23:8] of the logical address) to phy 0x18,
++ *     reg 0x0c, then wait ~100us for it to settle
++ *   - the 32-bit value then lives at phy 0x10, two consecutive 16-bit
++ *     registers (logical_addr & 0x1c) and +2, low half then high half
++ *
++ * This first cut is deliberately READ-ONLY. It reads EPHY_CFG (the register
++ * holding each EPHY's current strap address as a 5-bit field) and logs it,
++ * to settle whether the addresses already default to 1,2,3,4 in hardware
++ * before anything writes to a switch-internal register at all. The vendor's
++ * own U-Boot never programs EPHY_CFG either, only reads it, which is the
++ * whole reason this question is open.
++ */
++#define QCA8084_PAGE_PHY	0x18
++#define QCA8084_PAGE_REG	0x0c
++#define QCA8084_DATA_PHY	0x10
++#define QCA8084_EPHY_CFG	0x0c90f018u
++
++static int qca8084_reg_read32(struct mii_bus *bus, u32 addr, u32 *val)
++{
++	int lo, hi, ret;
++
++	/* mdiobus_read/write, not bus->read/write directly: these take
++	 * bus->mdio_lock, which matters here because of_mdiobus_register()
++	 * may already have kicked off concurrent PHY probes on this same
++	 * bus by the time preinit runs right after it returns.
++	 */
++	ret = mdiobus_write(bus, QCA8084_PAGE_PHY, QCA8084_PAGE_REG,
++			     (addr & 0xffffff) >> 8);
++	if (ret < 0)
++		return ret;
++	udelay(100);
++
++	lo = mdiobus_read(bus, QCA8084_DATA_PHY, addr & 0x1c);
++	if (lo < 0)
++		return lo;
++	hi = mdiobus_read(bus, QCA8084_DATA_PHY, (addr & 0x1c) + 2);
++	if (hi < 0)
++		return hi;
++
++	*val = ((u32)(u16)lo) | (((u32)(u16)hi) << 16);
++	return 0;
++}
++
++static void qca8084_preinit(struct mii_bus *bus)
++{
++	u32 ephy_cfg;
++	int port, ret;
++
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
++	if (ret) {
++		dev_warn(bus->parent,
++			 "qca8084: EPHY_CFG read failed (%d)\n", ret);
++		return;
++	}
++
++	dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x\n", ephy_cfg);
++	for (port = 0; port < 4; port++)
++		dev_info(bus->parent, "qca8084: port %d strap addr = 0x%x\n",
++			 port, (ephy_cfg >> (port * 5)) & 0x1f);
++}
++
+ struct ipq4019_mdio_data {
+ 	void __iomem	*membase;
+ 	void __iomem *eth_ldo_rdy;
+@@ -373,6 +443,9 @@
+ 		return ret;
+ 	}
+ 
++	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit"))
++		qca8084_preinit(bus);
++
+ 	platform_set_drvdata(pdev, bus);
+ 
+ 	return 0;

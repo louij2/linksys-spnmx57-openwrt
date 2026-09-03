@@ -161,6 +161,15 @@
 &mdio1 {
 	status = "okay";
 
+	/*
+	 * Read-only diagnostic preinit: reads EPHY_CFG and logs each port's
+	 * current strap address to the kernel log at probe time, using the
+	 * protocol reverse engineered from the vendor U-Boot (see
+	 * docs/uboot-qca8084-protocol.md). Writes nothing. Needs
+	 * 0919-net-mdio-ipq4019-add-QCA8084-preinit-for-SPNMX57.patch.
+	 */
+	qcom,qca8084-preinit;
+
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
 
