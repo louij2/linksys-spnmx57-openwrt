@@ -218,146 +218,17 @@
 	reset-post-delay-us = <50000>;
 
 	/*
-	 * DIAGNOSTIC MDIO SCAN -- remove once the bus map is known.
+	 * The 32 diagnostic phy stubs that used to sit here are gone. They
+	 * existed to make of_mdiobus_register() probe every address and print
+	 * "MDIO device at address N is missing", which was the only
+	 * SSDK-independent way to see the bus map on a cold chip. The preinit
+	 * patch now scans all 32 addresses itself and logs what answers, which
+	 * is strictly better and does not put 14 warnings in every boot log.
+	 * Set "qcom,qca8084-preinit-debug" above to turn that scan back on.
 	 *
-	 * of_mdiobus_register() walks explicit-reg children and, when
-	 * get_phy_device() returns -ENODEV, prints
-	 *   mdio_bus 90000.mdio-1: MDIO device at address N is missing.
-	 * and continues. Any address that DOES answer gets a real phy_device
-	 * with a readable /sys/bus/mdio_bus/devices/90000.mdio-1:NN/phy_id.
-	 *
-	 * This runs before qca-ssdk loads, so it cannot race it, and it is the
-	 * only SSDK-independent way to learn where the QCA8084 EPHYs actually
-	 * sit on a cold chip. Userspace cannot answer it: this kernel has
-	 * CONFIG_DEVMEM=n, no ftrace and no mdio-tools.
+	 * Real phy nodes for the four EPHYs at 1,2,3,4 belong here once they
+	 * actually answer MDIO, wrapped in a phy package container.
 	 */
-	ephy00: ethernet-phy@0 {
-		reg = <0x00>;
-	};
-
-	ephy01: ethernet-phy@1 {
-		reg = <0x01>;
-	};
-
-	ephy02: ethernet-phy@2 {
-		reg = <0x02>;
-	};
-
-	ephy03: ethernet-phy@3 {
-		reg = <0x03>;
-	};
-
-	ephy04: ethernet-phy@4 {
-		reg = <0x04>;
-	};
-
-	ephy05: ethernet-phy@5 {
-		reg = <0x05>;
-	};
-
-	ephy06: ethernet-phy@6 {
-		reg = <0x06>;
-	};
-
-	ephy07: ethernet-phy@7 {
-		reg = <0x07>;
-	};
-
-	ephy08: ethernet-phy@8 {
-		reg = <0x08>;
-	};
-
-	ephy09: ethernet-phy@9 {
-		reg = <0x09>;
-	};
-
-	ephy0a: ethernet-phy@a {
-		reg = <0x0a>;
-	};
-
-	ephy0b: ethernet-phy@b {
-		reg = <0x0b>;
-	};
-
-	ephy0c: ethernet-phy@c {
-		reg = <0x0c>;
-	};
-
-	ephy0d: ethernet-phy@d {
-		reg = <0x0d>;
-	};
-
-	ephy0e: ethernet-phy@e {
-		reg = <0x0e>;
-	};
-
-	ephy0f: ethernet-phy@f {
-		reg = <0x0f>;
-	};
-
-	ephy10: ethernet-phy@10 {
-		reg = <0x10>;
-	};
-
-	ephy11: ethernet-phy@11 {
-		reg = <0x11>;
-	};
-
-	ephy12: ethernet-phy@12 {
-		reg = <0x12>;
-	};
-
-	ephy13: ethernet-phy@13 {
-		reg = <0x13>;
-	};
-
-	ephy14: ethernet-phy@14 {
-		reg = <0x14>;
-	};
-
-	ephy15: ethernet-phy@15 {
-		reg = <0x15>;
-	};
-
-	ephy16: ethernet-phy@16 {
-		reg = <0x16>;
-	};
-
-	ephy17: ethernet-phy@17 {
-		reg = <0x17>;
-	};
-
-	ephy18: ethernet-phy@18 {
-		reg = <0x18>;
-	};
-
-	ephy19: ethernet-phy@19 {
-		reg = <0x19>;
-	};
-
-	ephy1a: ethernet-phy@1a {
-		reg = <0x1a>;
-	};
-
-	ephy1b: ethernet-phy@1b {
-		reg = <0x1b>;
-	};
-
-	ephy1c: ethernet-phy@1c {
-		reg = <0x1c>;
-	};
-
-	ephy1d: ethernet-phy@1d {
-		reg = <0x1d>;
-	};
-
-	ephy1e: ethernet-phy@1e {
-		reg = <0x1e>;
-	};
-
-	ephy1f: ethernet-phy@1f {
-		reg = <0x1f>;
-	};
 
 };
 
