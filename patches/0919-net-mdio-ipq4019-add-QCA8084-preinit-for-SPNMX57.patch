@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,804 @@
+@@ -48,6 +51,126 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -89,6 +89,7 @@ hand, and is commented as such.
 +#define QCA8084_MDIO_CTRL1	0x0c90f040u
 +/* fuse row carrying the SKU, per qca_mht_sku_check() */
 +#define QCA8084_QFPROM_PTE_ROW0	0x0c900000u
++#define QCA8084_QFPROM_PTE_ROW2	0x0c900014u
 +/* clock controller, per MHT_CLK_BASE_REG and the RCGR/CBCR bit definitions in
 + * qca-ssdk include/init/ssdk_mht_clk.h
 + */
@@ -165,6 +166,13 @@ hand, and is commented as such.
 +/* Set bit 0 (transcribed from FUN_4a94c568; meaning inferred as
 + * "clock enable" from context, not confirmed against a datasheet).
 + */
+ struct ipq4019_mdio_data {
+ 	void __iomem	*membase;
+ 	void __iomem *eth_ldo_rdy;
+@@ -55,6 +178,720 @@
+ 	unsigned int mdc_rate;
+ };
+ 
 +/* Write, read back, and say in the log whether the value actually stuck.
 + *
 + * Every write in this sequence used to be issued blind, and that mattered:
@@ -634,9 +642,43 @@ hand, and is commented as such.
 +	 * read". We do not, so a nonsense value here may be a clock artefact
 +	 * rather than a different chip.
 +	 */
++	/* Read the SKU the way the vendor reads it: with the MDIO clock slowed
++	 * right down, then put back.
++	 *
++	 * qca_mht_sku_check() calls ssdk_miibus_freq_set(..., 0xff) before
++	 * touching a fuse row and restores the old frequency straight after,
++	 * with the comment "fuse register need use lower mdio clock to read".
++	 * Reading it at the normal rate gave 0x00000265, which matches none of
++	 * the four known SKUs, and that is worth exactly nothing until this
++	 * read is done properly. If it still says 0x265 at the slowest clock,
++	 * then the assumption that this part is a QCA8386 is what needs
++	 * re-examining, and that would reframe everything.
++	 */
++	{
++		struct ipq4019_mdio_data *priv = bus->priv;
++		u32 saved_mode, slow_mode, row0 = 0, row2 = 0;
++
++		saved_mode = readl(priv->membase + MDIO_MODE_REG);
++		slow_mode = (saved_mode & ~MDIO_MODE_DIV_MASK) | MDIO_MODE_DIV(256);
++		writel(slow_mode, priv->membase + MDIO_MODE_REG);
++		/* let the slower clock settle before trusting a fuse read */
++		usleep_range(1000, 2000);
++
++		qca8084_reg_read32(bus, QCA8084_QFPROM_PTE_ROW0, &row0);
++		qca8084_reg_read32(bus, QCA8084_QFPROM_PTE_ROW2, &row2);
++
++		writel(saved_mode, priv->membase + MDIO_MODE_REG);
++		usleep_range(1000, 2000);
++
++		dev_info(bus->parent,
++			 "qca8084: SKU fuse at slow mdc (mode 0x%08x -> 0x%08x): row0 = 0x%08x, sku field 0x%05x (8082=0x1dc 8084=0x1dd 8085=0x1de 8386=0x1df), row2 = 0x%08x\n",
++			 saved_mode, slow_mode, row0, row0 & 0xfffff, row2);
++	}
++
++	/* and again at the normal rate, so the two are directly comparable */
 +	if (!qca8084_reg_read32(bus, QCA8084_QFPROM_PTE_ROW0, &reg_val))
 +		dev_info(bus->parent,
-+			 "qca8084: SKU fuse = 0x%08x, sku field 0x%05x (8082=0x1dc 8084=0x1dd 8085=0x1de 8386=0x1df)\n",
++			 "qca8084: SKU fuse at normal mdc: 0x%08x, sku field 0x%05x\n",
 +			 reg_val, reg_val & 0xfffff);
 +
 +	if (!qca8084_reg_read32(bus, QCA8084_MDIO_CTRL0, &reg_val))
@@ -844,10 +886,11 @@ hand, and is commented as such.
 +	}
 +}
 +
- struct ipq4019_mdio_data {
- 	void __iomem	*membase;
- 	void __iomem *eth_ldo_rdy;
-@@ -367,6 +1168,33 @@
++
+ static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
+@@ -367,6 +1204,33 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
