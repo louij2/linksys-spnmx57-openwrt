@@ -387,7 +387,7 @@ phy#1
 		ifindex 7
 		wdev 0x100000002
 		addr 02:11:22:33:44:22
-		ssid .Xboxlivenetwork
+		ssid <REDACTED-HOME-SSID>
 		type managed
 		channel 149 (5745 MHz), width: 80 MHz, center1: 5775 MHz
 		txpower 23.00 dBm

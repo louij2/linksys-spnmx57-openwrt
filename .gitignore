@@ -3,3 +3,5 @@
 *.zip
 images/*.bin
 images/*.itb
+collected/*.tar.gz
+collected/backup-*

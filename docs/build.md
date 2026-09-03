@@ -50,10 +50,28 @@ QCA8084/QCA8386 part:
 | `src/init/ssdk_mht_clk.c` | the whole clock tree: assert, deassert, enable, disable, parent set, rate set, uniphy raw clock set |
 | `src/hsl/mht/mht_sec_ctrl.c` | `qca_mht_ephy_addr_get()`, which reads the EPHY addresses out of the `EPHY_CFG` strap register |
 
-These are the same files Hyndland cited from the vendor GPL drop. They are not
-a vendor blob to be ported: **they are already compiled into this target and
-already loaded on the flashed unit**, which is why `/sys/ssdk/` exists on it and
-why the boot log says `qca-ssdk module init succeeded`.
+These are the same files Hyndland cited from the vendor GPL drop, and they are
+present in the **source** OpenWrt already builds from.
+
+> **CORRECTION, 2026-09-03.** An earlier version of this page claimed they are
+> "already compiled into this target and already loaded on the flashed unit."
+> **That is false**, and it was the load-bearing claim behind choosing the SSDK
+> route. Verified on the device:
+>
+> ```
+> strings /lib/modules/6.12.57/qca-ssdk.ko | grep -ci mht   ->  0
+> strings /lib/modules/6.12.57/qca-ssdk.ko | grep -ciE "scomphy|isisc"  ->  12
+> ```
+>
+> `package/kernel/qca-ssdk/Makefile` passes **`MHT_ENABLE=disable`** for every
+> subtarget, and qca-ssdk's own `config` only auto-enables MHT for
+> ipq53xx/ipq95xx/ipq60xx. So `ssdk_mht.c`, `ssdk_mht_clk.c` and `src/hsl/mht/*`
+> are **not built**, and `regi_init`'s `case CHIP_MHT:` is an empty break.
+> `/sys/ssdk/` existing and "module init succeeded" on the 56 prove only that the
+> module loads, not that MHT is in it. I inferred the latter from the former.
+>
+> The route is still the right one, but it needs `MHT_ENABLE=enable` adding, not
+> merely a device tree. See `docs/ssdk-detect.md`.
 
 `src/init/ssdk_dts.c` parses `qcom,ess-switch-qca8386` and `switch_mac_mode1`
 directly, and supports the `ess-switch<N>` naming for a second device.

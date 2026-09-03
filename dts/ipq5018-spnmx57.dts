@@ -99,6 +99,22 @@
 
 	qcom,port_phyinfo {
 		/*
+		 * [vendor] MAC0 -> internal GE PHY at mdio0 address 7.
+		 *
+		 * This entry is REQUIRED even though MAC0 drives no socket. On
+		 * ipq5018 chip_ver_get() finds no matching QCA_VER_* from the
+		 * local-bus read and falls through to chip_is_scomphy(), which
+		 * calls qca_detect_phyid(0) and reads the PHY at this address.
+		 * Delete it and device 0 fails with -ENODEV too, exactly as
+		 * device 1 does. The vendor tree declares it for the same reason.
+		 */
+		port@0 {
+			port_id = <1>;
+			mdiobus = <&mdio0>;
+			phy_address = <7>;
+		};
+
+		/*
 		 * [vendor] MAC1 -> UNIPHY1 -> QCA8386, forced 2.5G, no PHY.
 		 *
 		 * There is deliberately no port@0 here. The vendor declares one
@@ -162,6 +178,149 @@
 	reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
 	reset-delay-us = <10000>;
 	reset-post-delay-us = <50000>;
+
+	/*
+	 * DIAGNOSTIC MDIO SCAN -- remove once the bus map is known.
+	 *
+	 * of_mdiobus_register() walks explicit-reg children and, when
+	 * get_phy_device() returns -ENODEV, prints
+	 *   mdio_bus 90000.mdio-1: MDIO device at address N is missing.
+	 * and continues. Any address that DOES answer gets a real phy_device
+	 * with a readable /sys/bus/mdio_bus/devices/90000.mdio-1:NN/phy_id.
+	 *
+	 * This runs before qca-ssdk loads, so it cannot race it, and it is the
+	 * only SSDK-independent way to learn where the QCA8084 EPHYs actually
+	 * sit on a cold chip. Userspace cannot answer it: this kernel has
+	 * CONFIG_DEVMEM=n, no ftrace and no mdio-tools.
+	 */
+	ephy00: ethernet-phy@0 {
+		reg = <0x00>;
+	};
+
+	ephy01: ethernet-phy@1 {
+		reg = <0x01>;
+	};
+
+	ephy02: ethernet-phy@2 {
+		reg = <0x02>;
+	};
+
+	ephy03: ethernet-phy@3 {
+		reg = <0x03>;
+	};
+
+	ephy04: ethernet-phy@4 {
+		reg = <0x04>;
+	};
+
+	ephy05: ethernet-phy@5 {
+		reg = <0x05>;
+	};
+
+	ephy06: ethernet-phy@6 {
+		reg = <0x06>;
+	};
+
+	ephy07: ethernet-phy@7 {
+		reg = <0x07>;
+	};
+
+	ephy08: ethernet-phy@8 {
+		reg = <0x08>;
+	};
+
+	ephy09: ethernet-phy@9 {
+		reg = <0x09>;
+	};
+
+	ephy0a: ethernet-phy@a {
+		reg = <0x0a>;
+	};
+
+	ephy0b: ethernet-phy@b {
+		reg = <0x0b>;
+	};
+
+	ephy0c: ethernet-phy@c {
+		reg = <0x0c>;
+	};
+
+	ephy0d: ethernet-phy@d {
+		reg = <0x0d>;
+	};
+
+	ephy0e: ethernet-phy@e {
+		reg = <0x0e>;
+	};
+
+	ephy0f: ethernet-phy@f {
+		reg = <0x0f>;
+	};
+
+	ephy10: ethernet-phy@10 {
+		reg = <0x10>;
+	};
+
+	ephy11: ethernet-phy@11 {
+		reg = <0x11>;
+	};
+
+	ephy12: ethernet-phy@12 {
+		reg = <0x12>;
+	};
+
+	ephy13: ethernet-phy@13 {
+		reg = <0x13>;
+	};
+
+	ephy14: ethernet-phy@14 {
+		reg = <0x14>;
+	};
+
+	ephy15: ethernet-phy@15 {
+		reg = <0x15>;
+	};
+
+	ephy16: ethernet-phy@16 {
+		reg = <0x16>;
+	};
+
+	ephy17: ethernet-phy@17 {
+		reg = <0x17>;
+	};
+
+	ephy18: ethernet-phy@18 {
+		reg = <0x18>;
+	};
+
+	ephy19: ethernet-phy@19 {
+		reg = <0x19>;
+	};
+
+	ephy1a: ethernet-phy@1a {
+		reg = <0x1a>;
+	};
+
+	ephy1b: ethernet-phy@1b {
+		reg = <0x1b>;
+	};
+
+	ephy1c: ethernet-phy@1c {
+		reg = <0x1c>;
+	};
+
+	ephy1d: ethernet-phy@1d {
+		reg = <0x1d>;
+	};
+
+	ephy1e: ethernet-phy@1e {
+		reg = <0x1e>;
+	};
+
+	ephy1f: ethernet-phy@1f {
+		reg = <0x1f>;
+	};
+
 };
 
 &pcie0_phy {
