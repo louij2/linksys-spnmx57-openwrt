@@ -68,24 +68,32 @@
 			};
 
 			/* [vendor] the four QCA8084 EPHYs at MDIO 1..4 */
+			/*
+			 * [confirmed live] EPHY_CFG read back as 0x00318820 via the
+			 * qca8084-preinit diagnostic (docs/uboot-qca8084-protocol.md):
+			 * port0=addr0, port1=addr1, port2=addr2, port3=addr3.
+			 * 0-indexed, NOT 1,2,3,4 as the vendor tree declares and as
+			 * this file previously had it -- the vendor's own DTS values
+			 * do not match what is actually strapped on this unit.
+			 */
 			port@1 {
 				port_id = <1>;
-				phy_address = <1>;
+				phy_address = <0>;
 			};
 
 			port@2 {
 				port_id = <2>;
-				phy_address = <2>;
+				phy_address = <1>;
 			};
 
 			port@3 {
 				port_id = <3>;
-				phy_address = <3>;
+				phy_address = <2>;
 			};
 
 			port@4 {
 				port_id = <4>;
-				phy_address = <4>;
+				phy_address = <3>;
 			};
 		};
 	};
