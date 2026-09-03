@@ -5,24 +5,33 @@ Fibre supplied, Qualcomm **IPQ5018**, vendor codename **Palm15**).
 
 ## Status
 
-OpenWrt boots and most of the device works. **Ethernet does not.**
+OpenWrt boots and everything except Ethernet works. There is a **usable release**
+for anyone who wants the box as a wireless repeater in the meantime: see
+[Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases).
 
 | | |
 |---|---|
-| Kernel boot | works |
+| Kernel boot, UBI + overlay | works |
+| Wi-Fi (QCN9074, ath11k) | works, all three interfaces at once |
 | PCIe | works |
-| Wi-Fi (QCN9074, ath11k) | works |
-| UBI + overlay | works |
-| **Ethernet** | **fails** |
+| LEDs, buttons, serial, SSH | works |
+| sysupgrade + self-recovery | works |
+| QCA8386 switch register access | works, reads and writes |
+| **Ethernet** | **does not** |
 
-The failure:
+The `-22` that this repo started from is long gone. The current position is
+narrower and much better understood: the switch is fully reachable and the entire
+vendor bring-up sequence has been reverse engineered and now runs correctly, with
+all 27 of its register writes read back and verified on hardware. What has not
+happened is the four QCA8084 EPHYs answering Clause 22 MDIO at addresses 1-4.
 
-```
-Qualcomm QCA8084 90000.mdio-1:00: probe failed with error -22
-```
-
-`-22` is `-EINVAL`. **This is now root caused.** See
-[docs/investigation.md](docs/investigation.md).
+**The blocker that hid all of this was a chip held in reset.** Every register read
+returned `0xffffffff` for three builds. `__mdiobus_register()` is what claims a
+bus's reset GPIO and pulses it, so bring-up code that runs before registration
+inherits that job -- and here the line (tlmm gpio24, `GPIO_ACTIVE_LOW`) was still
+unclaimed with a pull-down, holding the QCA8386 in hardware reset for the whole
+sequence. See [docs/HANDOVER.md](docs/HANDOVER.md) for the full current state, and
+[docs/investigation.md](docs/investigation.md) for the original `-22` analysis.
 
 ## What is known, and how
 

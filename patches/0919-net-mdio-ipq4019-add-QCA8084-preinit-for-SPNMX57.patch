@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,474 @@
+@@ -48,6 +51,534 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -76,6 +76,21 @@ hand, and is commented as such.
 +#define QCA8084_EPHY_HOLD	0x0c800304u
 +/* read to decide whether the vendor runs the calibration loop */
 +#define QCA8084_CALIB_GATE	0x0c900014u
++
++/* The bring-up sequence logs a lot: a read-back verdict for every register it
++ * writes, the strap addresses, the gate value, and a full 32-address bus scan.
++ * That is the right default while the port is being debugged and the wrong one
++ * on a device somebody is actually using, so it is gated on a DTS property.
++ * Set "qcom,qca8084-preinit-debug" alongside "qcom,qca8084-preinit" to get it
++ * back. Warnings are never gated.
++ */
++static bool qca8084_verbose;
++
++#define qca8084_dbg(dev, fmt, ...)					\
++	do {								\
++		if (qca8084_verbose)					\
++			dev_info(dev, fmt, ##__VA_ARGS__);		\
++	} while (0)
 +
 +static int qca8084_reg_read32(struct mii_bus *bus, u32 addr, u32 *val)
 +{
@@ -128,6 +143,45 @@ hand, and is commented as such.
 +/* Set bit 0 (transcribed from FUN_4a94c568; meaning inferred as
 + * "clock enable" from context, not confirmed against a datasheet).
 + */
++/* Write, read back, and say in the log whether the value actually stuck.
++ *
++ * Every write in this sequence used to be issued blind, and that mattered:
++ * for three builds the package was held in reset and every one of them was
++ * a silent no-op that nothing reported. This runs once, at probe, so the
++ * extra reads cost nothing worth counting, and a write that does not land
++ * is precisely the failure mode this bring-up keeps hitting.
++ *
++ * mask says which bits the verdict is about. Several of these registers
++ * carry status bits alongside the control bit, so a whole-word compare
++ * would cry wolf; pass just the bits being set or cleared.
++ */
++static int qca8084_write_verify(struct mii_bus *bus, const char *what,
++				u32 reg, u32 val, u32 mask)
++{
++	u32 got;
++	int ret = qca8084_reg_write32(bus, reg, val);
++
++	if (ret) {
++		dev_warn(bus->parent, "qca8084: %s 0x%08x write failed (%d)\n",
++			 what, reg, ret);
++		return ret;
++	}
++
++	ret = qca8084_reg_read32(bus, reg, &got);
++	if (ret) {
++		dev_warn(bus->parent,
++			 "qca8084: %s 0x%08x read-back failed (%d)\n",
++			 what, reg, ret);
++		return ret;
++	}
++
++	qca8084_dbg(bus->parent,
++		 "qca8084: %s 0x%08x <- 0x%08x, reads 0x%08x -- masked %08x %s\n",
++		 what, reg, val, got, mask,
++		 (got & mask) == (val & mask) ? "LANDED" : "DID NOT LAND");
++	return 0;
++}
++
 +static int qca8084_clk_enable(struct mii_bus *bus, u32 reg)
 +{
 +	u32 val;
@@ -135,7 +189,7 @@ hand, and is commented as such.
 +
 +	if (ret)
 +		return ret;
-+	return qca8084_reg_write32(bus, reg, val | 1);
++	return qca8084_write_verify(bus, "clk enable", reg, val | 1, 1);
 +}
 +
 +/* Assert bit 2, wait ~21ms, deassert (transcribed from FUN_4a94c57e;
@@ -148,11 +202,11 @@ hand, and is commented as such.
 +
 +	if (ret)
 +		return ret;
-+	ret = qca8084_reg_write32(bus, reg, val | 4);
++	ret = qca8084_write_verify(bus, "reset assert", reg, val | 4, 4);
 +	if (ret)
 +		return ret;
 +	usleep_range(21000, 22000);
-+	return qca8084_reg_write32(bus, reg, val & ~4u);
++	return qca8084_write_verify(bus, "reset release", reg, val & ~4u, 4);
 +}
 +
 +/* Standard Qualcomm PHY "debug register" access: write the sub-register
@@ -247,7 +301,7 @@ hand, and is commented as such.
 +		 * logical 1 here means asserted, i.e. the package was in reset
 +		 * on entry, which is the predicted state.
 +		 */
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: reset gpio as found = %d (1 = asserted, in reset)\n",
 +			 gpiod_get_value_cansleep(reset_gpio));
 +
@@ -262,7 +316,7 @@ hand, and is commented as such.
 +		fsleep(delay_us);
 +		gpiod_set_value_cansleep(reset_gpio, 0);
 +		fsleep(post_delay_us);
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: reset pulsed and deasserted (%u us / %u us)\n",
 +			 delay_us, post_delay_us);
 +	} else {
@@ -286,10 +340,10 @@ hand, and is commented as such.
 +			 ret);
 +		return;
 +	}
-+	dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x before preinit\n",
++	qca8084_dbg(bus->parent, "qca8084: EPHY_CFG = 0x%08x before preinit\n",
 +		 ephy_cfg);
 +	for (port = 0; port < 4; port++)
-+		dev_info(bus->parent, "qca8084: port %d strap addr = 0x%x\n",
++		qca8084_dbg(bus->parent, "qca8084: port %d strap addr = 0x%x\n",
 +			 port, (ephy_cfg >> (port * 5)) & 0x1f);
 +
 +	/* Diagnostic, and the thing that makes this boot conclusive either
@@ -362,7 +416,7 @@ hand, and is commented as such.
 +	if (!ret) {
 +		qca8084_reg_write32(bus, QCA8084_EPHY_CFG,
 +				    (ephy_cfg & 0xfff00000u) | 0x20c41u);
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: EPHY MDIO addresses assigned 1,2,3,4\n");
 +	}
 +
@@ -370,7 +424,7 @@ hand, and is commented as such.
 +	if (!ret) {
 +		qca8084_reg_write32(bus, QCA8084_MDIO_ADDR_CFG,
 +				    (reg_val & ~0x7fffu) | 0x1cc5u);
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: companion MDIO addresses assigned 5,6,7\n");
 +	}
 +	usleep_range(11000, 12000);
@@ -394,7 +448,7 @@ hand, and is commented as such.
 +				 reg, ret);
 +			continue;
 +		}
-+		qca8084_reg_write32(bus, reg, val & ~1u);
++		qca8084_write_verify(bus, "isolate-clear", reg, val & ~1u, 1);
 +	}
 +
 +	/* per-EPHY clock enable, then reset-pulse, all 4 shared blocks first */
@@ -414,10 +468,14 @@ hand, and is commented as such.
 +	 * confirmed against a datasheet, only its position in the sequence.
 +	 */
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_HOLD, &reg_val);
-+	if (ret)
++	if (ret) {
 +		dev_warn(bus->parent, "qca8084: EPHY_HOLD read failed (%d)\n", ret);
-+	else
-+		qca8084_reg_write32(bus, QCA8084_EPHY_HOLD, reg_val & 0xffffffe0u);
++	} else {
++		qca8084_dbg(bus->parent, "qca8084: EPHY_HOLD before = 0x%08x\n",
++			 reg_val);
++		qca8084_write_verify(bus, "EPHY_HOLD", QCA8084_EPHY_HOLD,
++				     reg_val & 0xffffffe0u, 0x1f);
++	}
 +
 +	/* Calibration loop is gated: only runs if this status field is 1 or 2.
 +	 * Meaning not confirmed (chip variant / package mode?), transcribed
@@ -430,7 +488,7 @@ hand, and is commented as such.
 +	} else {
 +		vendor_gate = (((gate_reg & 0xffffff) >> 0x10) - 1) < 2;
 +
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: gate register 0x%08x, vendor calibration condition %s\n",
 +			 gate_reg, vendor_gate ? "true" : "false");
 +	}
@@ -474,12 +532,12 @@ hand, and is commented as such.
 +			qca8084_debug_write(bus, phy_addr, 0x280, 0x001f,
 +					     trim_b & 0x1f);
 +
-+			dev_info(bus->parent,
++			qca8084_dbg(bus->parent,
 +				 "qca8084: port %d (phy 0x%x) calibrated, trim_a=0x%x trim_b=0x%x\n",
 +				 port, phy_addr, trim_a, trim_b);
 +		}
 +	} else if (!ret) {
-+		dev_info(bus->parent,
++		qca8084_dbg(bus->parent,
 +			 "qca8084: gate condition false, calibration loop skipped (matches the vendor)\n");
 +	}
 +
@@ -492,8 +550,10 @@ hand, and is commented as such.
 +
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
 +	if (!ret)
-+		dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x after preinit\n",
-+			 ephy_cfg);
++		dev_info(bus->parent,
++			 "qca8084: preinit done, EPHY_CFG = 0x%08x\n", ephy_cfg);
++	else
++		dev_warn(bus->parent, "qca8084: preinit done, EPHY_CFG unreadable\n");
 +
 +	/* Final bus map, logged unconditionally. of_mdiobus_register() only
 +	 * reports the addresses the DTS names, so this is the only way to see
@@ -507,7 +567,7 @@ hand, and is commented as such.
 +			int id2 = bus->read(bus, addr, MII_PHYSID2);
 +
 +			if (id1 > 0 && id1 != 0xffff)
-+				dev_info(bus->parent,
++				qca8084_dbg(bus->parent,
 +					 "qca8084: post-init scan: addr %d -> PHY ID 0x%04x%04x\n",
 +					 addr, id1, id2);
 +		}
@@ -517,7 +577,7 @@ hand, and is commented as such.
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -367,6 +838,31 @@
+@@ -367,6 +898,33 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
@@ -540,12 +600,14 @@ hand, and is commented as such.
 +	 * bus->parent are all already assigned above.
 +	 */
 +	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit")) {
-+		dev_info(&pdev->dev, "qca8084: MARKER preinit call starting\n");
++		qca8084_verbose = of_property_read_bool(pdev->dev.of_node,
++						"qcom,qca8084-preinit-debug");
++		qca8084_dbg(&pdev->dev, "qca8084: MARKER preinit call starting\n");
 +		qca8084_preinit(bus);
-+		dev_info(&pdev->dev, "qca8084: MARKER preinit call finished\n");
++		qca8084_dbg(&pdev->dev, "qca8084: MARKER preinit call finished\n");
 +	}
 +
-+	dev_info(&pdev->dev, "qca8084: MARKER about to call of_mdiobus_register\n");
++	qca8084_dbg(&pdev->dev, "qca8084: MARKER about to call of_mdiobus_register\n");
  	ret = of_mdiobus_register(bus, pdev->dev.of_node);
  	if (ret) {
  		dev_err(&pdev->dev, "Cannot register MDIO bus!\n");
