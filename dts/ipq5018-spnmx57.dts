@@ -69,31 +69,42 @@
 
 			/* [vendor] the four QCA8084 EPHYs at MDIO 1..4 */
 			/*
-			 * [confirmed live] EPHY_CFG read back as 0x00318820 via the
-			 * qca8084-preinit diagnostic (docs/uboot-qca8084-protocol.md):
-			 * port0=addr0, port1=addr1, port2=addr2, port3=addr3.
-			 * 0-indexed, NOT 1,2,3,4 as the vendor tree declares and as
-			 * this file previously had it -- the vendor's own DTS values
-			 * do not match what is actually strapped on this unit.
+			 * Back to the vendor's 1,2,3,4, and this time for a reason
+			 * rather than by inheritance.
+			 *
+			 * EPHY_CFG does read 0x00318820 on a cold chip, which decodes
+			 * to strap addresses 0,1,2,3, and that is what this file said
+			 * for a while. But the strap is only the power-on default.
+			 * Ghidra decompilation of the vendor U-Boot shows FUN_4a94c7d0
+			 * overwriting EPHY_CFG's low 20 bits with a hardcoded 0x20c41
+			 * immediately after bring-up, which is the same four 5-bit
+			 * fields holding 1,2,3,4. The preinit patch now does the same
+			 * write, so 1,2,3,4 is where the EPHYs actually end up.
+			 *
+			 * Corroborated by the vendor's own in-use address bitmap in
+			 * that function, 0xffff001e: bits 1-4 marked taken for these
+			 * four EPHYs, and bits 16-31 for the switch register window,
+			 * which is exactly the 0x10-0x1f block seen answering on the
+			 * live bus.
 			 */
 			port@1 {
 				port_id = <1>;
-				phy_address = <0>;
+				phy_address = <1>;
 			};
 
 			port@2 {
 				port_id = <2>;
-				phy_address = <1>;
+				phy_address = <2>;
 			};
 
 			port@3 {
 				port_id = <3>;
-				phy_address = <2>;
+				phy_address = <3>;
 			};
 
 			port@4 {
 				port_id = <4>;
-				phy_address = <3>;
+				phy_address = <4>;
 			};
 		};
 	};
