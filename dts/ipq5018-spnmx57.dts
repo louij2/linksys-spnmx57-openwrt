@@ -126,6 +126,22 @@
 	nvmem-cell-names = "mac-address";
 };
 
+/*
+ * mdio0 must be enabled even though MAC0 is not wired to a socket.
+ *
+ * The SSDK's ssdk_dt_get_mdio_node() finds its default bus by compatible
+ * string, and mdio@88000 is the only node carrying "qcom,ipq40xx-mdio".
+ * Leaving it disabled means no platform device is created for it, so
+ * of_find_device_by_node() returns NULL and ssdk_dt_parse_default_mdio_bus()
+ * fails with "cannot find platform device from mdio node" -- which aborts
+ * the whole SSDK init ("no device found") and then oopses qca_nss_dp.
+ *
+ * The vendor tree has mdio@88000 status = "ok" for the same reason.
+ */
+&mdio0 {
+	status = "okay";
+};
+
 &mdio1 {
 	status = "okay";
 
