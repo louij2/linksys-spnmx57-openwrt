@@ -192,7 +192,17 @@
 	 * ACTIVE_LOW is what matches the behaviour. If the package never
 	 * comes out of reset, try ACTIVE_HIGH.
 	 */
-	reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+	/*
+	 * Deliberately NOT called "reset-gpios". __mdiobus_register() claims
+	 * and pulses a property of that name itself, and preinit now runs
+	 * before registration, so leaving it as "reset-gpios" means the
+	 * package is still held in reset for the whole of preinit (every
+	 * transaction reads 0xffffffff) and is then reset a second time
+	 * afterwards, throwing away the clock/reset/calibration work.
+	 * Under the private name, the preinit code owns the line and
+	 * __mdiobus_register() leaves it alone.
+	 */
+	qca8084-reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
 	reset-delay-us = <10000>;
 	reset-post-delay-us = <50000>;
 
