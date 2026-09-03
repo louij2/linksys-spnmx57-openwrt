@@ -1,26 +1,30 @@
 From: SPNMX57 port
-Subject: [PATCH] net: mdio: ipq4019: add opt-in QCA8084 preinit (read-only first cut)
+Subject: [PATCH] net: mdio: ipq4019: QCA8084 preinit v2, clock/reset/calibrate
 
-Reverse engineered from the vendor U-Boot APPSBL partition on a Linksys
-SPNMX57 (Ghidra decompilation, not a datasheet); see
-docs/uboot-qca8084-protocol.md in louij2/linksys-spnmx57-openwrt for the
-full trace and how it was obtained.
+Extends the read-only first cut with the full sequence reverse engineered
+from the vendor U-Boot APPSBL partition via Ghidra decompilation of
+FUN_4a94c630 (clock enable, reset pulse, per-port calibration) and its two
+small helpers. See docs/uboot-qca8084-protocol.md and
+docs/preinit-remaining-scope.md in louij2/linksys-spnmx57-openwrt.
 
-The QCA8386 switch exposes its internal 32-bit register space over plain
-Clause 22 MDIO, indirectly, via a fixed page-select/data pseudo-PHY pair.
-This is the same MDIO controller mainline already drives correctly; no new
-low-level transaction primitive is needed, only this indirect addressing
-on top of the existing read_c22/write_c22.
+Confirmed on real hardware first: the read-only v1 read EPHY_CFG as a
+stable, sensible 0x00318820 (strap addresses 0,1,2,3) across two separate
+boots, so the underlying 32-bit indirect register protocol is trusted
+before this patch writes anything with it.
 
-Deliberately read-only for now: reads EPHY_CFG (which holds each of the
-four EPHYs current strap address as a 5-bit field) and logs it. The
-vendors own U-Boot never writes new addresses into this register either,
-only reads it, so whether the addresses already default to 1,2,3,4 in
-hardware is an open question this settles before anything writes to a
-switch internal register at all.
+Sequence: enable+reset-pulse two shared clock domains, clear bit 0 across
+eight registers in a 0x20-byte-stepped range (meaning not confirmed against
+a datasheet, transcribed as-is), enable+reset-pulse the four per-EPHY clock
+domains, then -- gated on a status register read matching the same gate
+condition the vendor code uses -- calibrate each of the four EPHYs by
+writing two extracted bitfields into its own MDIO debug registers 0x1D/0x1E
+(the same convention mainline at803x.c already uses for other Qualcomm
+PHYs), finishing with the EPHY_CFG bit[21:20] clear the vendor code also
+performs at the end.
 
-Opt-in via qcom,qca8084-preinit on the mdio node; no effect on any other
-board.
+Every multi-bit constant not independently verified against a datasheet is
+transcribed exactly from the decompiled bytecode rather than re-derived by
+hand, and is commented as such.
 ---
 --- a/drivers/net/mdio/mdio-ipq4019.c
 +++ b/drivers/net/mdio/mdio-ipq4019.c
@@ -32,7 +36,7 @@ board.
  #include <linux/of_mdio.h>
  #include <linux/phy.h>
  #include <linux/platform_device.h>
-@@ -48,6 +49,75 @@
+@@ -48,6 +49,279 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -65,21 +69,26 @@ board.
 +{
 +	int lo, hi, ret;
 +
-+	/* mdiobus_read/write, not bus->read/write directly: these take
-+	 * bus->mdio_lock, which matters here because of_mdiobus_register()
-+	 * may already have kicked off concurrent PHY probes on this same
-+	 * bus by the time preinit runs right after it returns.
++	/* bus->read/write directly, NOT mdiobus_read/write: this now runs
++	 * BEFORE of_mdiobus_register(), and bus->mdio_lock is only
++	 * initialised INSIDE __mdiobus_register() (mutex_init(&bus->mdio_lock)
++	 * happens there, not at allocation -- checked against the actual
++	 * kernel source after an earlier version of this patch silently read
++	 * back 0xffffffff from every transaction, which is consistent with
++	 * mdiobus_read() taking an uninitialised mutex). At this point in
++	 * probe() the bus is not yet visible to anything else, so there is no
++	 * concurrent access to guard against and no lock is needed yet.
 +	 */
-+	ret = mdiobus_write(bus, QCA8084_PAGE_PHY, QCA8084_PAGE_REG,
-+			     (addr & 0xffffff) >> 8);
++	ret = bus->write(bus, QCA8084_PAGE_PHY, QCA8084_PAGE_REG,
++			  (addr & 0xffffff) >> 8);
 +	if (ret < 0)
 +		return ret;
 +	udelay(100);
 +
-+	lo = mdiobus_read(bus, QCA8084_DATA_PHY, addr & 0x1c);
++	lo = bus->read(bus, QCA8084_DATA_PHY, addr & 0x1c);
 +	if (lo < 0)
 +		return lo;
-+	hi = mdiobus_read(bus, QCA8084_DATA_PHY, (addr & 0x1c) + 2);
++	hi = bus->read(bus, QCA8084_DATA_PHY, (addr & 0x1c) + 2);
 +	if (hi < 0)
 +		return hi;
 +
@@ -87,34 +96,255 @@ board.
 +	return 0;
 +}
 +
++static int qca8084_reg_write32(struct mii_bus *bus, u32 addr, u32 val)
++{
++	int ret;
++	u32 slot = addr & 0x1c;
++
++	ret = bus->write(bus, QCA8084_PAGE_PHY, QCA8084_PAGE_REG,
++			  (addr & 0xffffff) >> 8);
++	if (ret < 0)
++		return ret;
++	udelay(100);
++
++	ret = bus->write(bus, QCA8084_DATA_PHY, slot, val & 0xffff);
++	if (ret < 0)
++		return ret;
++	return bus->write(bus, QCA8084_DATA_PHY, slot + 2, val >> 16);
++}
++
++/* Set bit 0 (transcribed from FUN_4a94c568; meaning inferred as
++ * "clock enable" from context, not confirmed against a datasheet).
++ */
++static int qca8084_clk_enable(struct mii_bus *bus, u32 reg)
++{
++	u32 val;
++	int ret = qca8084_reg_read32(bus, reg, &val);
++
++	if (ret)
++		return ret;
++	return qca8084_reg_write32(bus, reg, val | 1);
++}
++
++/* Assert bit 2, wait ~21ms, deassert (transcribed from FUN_4a94c57e;
++ * meaning inferred as "reset pulse" from the assert/wait/deassert shape).
++ */
++static int qca8084_reset_pulse(struct mii_bus *bus, u32 reg)
++{
++	u32 val;
++	int ret = qca8084_reg_read32(bus, reg, &val);
++
++	if (ret)
++		return ret;
++	ret = qca8084_reg_write32(bus, reg, val | 4);
++	if (ret)
++		return ret;
++	usleep_range(21000, 22000);
++	return qca8084_reg_write32(bus, reg, val & ~4u);
++}
++
++/* Standard Qualcomm PHY "debug register" access: write the sub-register
++ * address to MDIO reg 0x1d, then the value is read/written via reg 0x1e.
++ * The same convention mainline's at803x.c already uses for other Qualcomm
++ * PHYs, applied here to each EPHY's own MDIO address.
++ */
++static int qca8084_debug_write(struct mii_bus *bus, int phy_addr,
++				u16 debug_reg, u16 mask, u16 set)
++{
++	int val, ret;
++
++	ret = bus->write(bus, phy_addr, 0x1d, debug_reg);
++	if (ret < 0)
++		return ret;
++	val = bus->read(bus, phy_addr, 0x1e);
++	if (val < 0)
++		return val;
++	ret = bus->write(bus, phy_addr, 0x1d, debug_reg);
++	if (ret < 0)
++		return ret;
++	return bus->write(bus, phy_addr, 0x1e, (val & ~mask) | set);
++}
++
++/* Per-port calibration source registers and the bitfield extraction each
++ * one needs -- transcribed exactly from the decompiled calibration loop
++ * (FUN_4a94c630), not re-derived. Ports 1 and 2 share the same extraction
++ * shape and only differ in which register they read.
++ */
++struct qca8084_calib_src {
++	u32 reg;
++	u32 trim_a_shift, trim_a_mask;
++	u32 trim_b_shift, trim_b_mask;
++};
++
++static const struct qca8084_calib_src qca8084_calib_srcs[4] = {
++	/* port 0 */ { 0x0c900048, 0x12, 0x3fffff, 0x16, 0x7ffffff },
++	/* port 1 */ { 0x0c900060, 0x17, 0x7ffffff, 0x1b, 0xffffffff },
++	/* port 2 */ { 0x0c900068, 0x17, 0x7ffffff, 0x1b, 0xffffffff },
++	/* port 3 */ { 0x0c90005c, 0x0e, 0x3ffff,   0x12, 0x7fffff },
++};
++
 +static void qca8084_preinit(struct mii_bus *bus)
 +{
-+	u32 ephy_cfg;
++	static const u32 clk_a = 0x0c8001a8, clk_b = 0x0c8001ac;
++	static const u32 ephy_clk[4] = { 0x0c8001b0, 0x0c8001b4,
++					  0x0c8001b8, 0x0c8001bc };
++	u32 ephy_cfg, gate_reg;
++	u32 reg;
 +	int port, ret;
++
++	/* Now called before of_mdiobus_register(), so the MDIO controller's
++	 * own reset/clock-divider setup (normally run as part of bus
++	 * registration) has NOT happened yet at this point -- without it,
++	 * every transaction on this bus reads back all-1s (confirmed: the
++	 * first attempt at this ordering read EPHY_CFG as 0xffffffff, not a
++	 * real value). bus->reset is already assigned by this point in
++	 * probe() and only touches priv fields (membase, mdio_clk) set up
++	 * earlier in probe() too, so it is safe to call directly here
++	 * without the bus being registered.
++	 */
++	if (bus->reset)
++		bus->reset(bus);
 +
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
 +	if (ret) {
 +		dev_warn(bus->parent,
-+			 "qca8084: EPHY_CFG read failed (%d)\n", ret);
++			 "qca8084: EPHY_CFG read failed (%d), aborting preinit\n",
++			 ret);
 +		return;
 +	}
-+
-+	dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x\n", ephy_cfg);
++	dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x before preinit\n",
++		 ephy_cfg);
 +	for (port = 0; port < 4; port++)
 +		dev_info(bus->parent, "qca8084: port %d strap addr = 0x%x\n",
 +			 port, (ephy_cfg >> (port * 5)) & 0x1f);
++
++	/* clock enable, then reset-pulse, both shared blocks first */
++	qca8084_clk_enable(bus, clk_a);
++	qca8084_clk_enable(bus, clk_b);
++	qca8084_reset_pulse(bus, clk_a);
++	qca8084_reset_pulse(bus, clk_b);
++
++	/* clear bit 0 across 8 registers 0x058..0x138 step 0x20 -- transcribed
++	 * as-is from FUN_4a94c630; meaning not confirmed (isolate/bypass?).
++	 */
++	for (reg = 0x0c800058; reg != 0x0c800158; reg += 0x20) {
++		u32 val;
++
++		ret = qca8084_reg_read32(bus, reg, &val);
++		if (ret) {
++			dev_warn(bus->parent,
++				 "qca8084: isolate-clear read 0x%x failed (%d)\n",
++				 reg, ret);
++			continue;
++		}
++		qca8084_reg_write32(bus, reg, val & ~1u);
++	}
++
++	/* per-EPHY clock enable, then reset-pulse, all 4 shared blocks first */
++	for (port = 0; port < 4; port++)
++		qca8084_clk_enable(bus, ephy_clk[port]);
++	for (port = 0; port < 4; port++)
++		qca8084_reset_pulse(bus, ephy_clk[port]);
++
++	/* Calibration loop is gated: only runs if this status field is 1 or 2.
++	 * Meaning not confirmed (chip variant / package mode?), transcribed
++	 * as-is.
++	 */
++	ret = qca8084_reg_read32(bus, 0x0c900014, &gate_reg);
++	if (ret) {
++		dev_warn(bus->parent, "qca8084: gate register read failed (%d)\n",
++			 ret);
++	} else {
++		bool vendor_gate = (((gate_reg & 0xffffff) >> 0x10) - 1) < 2;
++
++		dev_info(bus->parent,
++			 "qca8084: gate register 0x%08x (vendor condition %s) -- calibrating anyway to test whether it is a hard requirement\n",
++			 gate_reg, vendor_gate ? "true" : "false");
++	}
++	if (!ret) {
++		for (port = 0; port < 4; port++) {
++			const struct qca8084_calib_src *src = &qca8084_calib_srcs[port];
++			u32 srcval, ephy_cfg_now;
++			u32 trim_a, trim_b;
++			int phy_addr;
++
++			ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg_now);
++			if (ret)
++				break;
++			phy_addr = (ephy_cfg_now >> (port * 5)) & 0x1f;
++
++			ret = qca8084_reg_read32(bus, src->reg, &srcval);
++			if (ret)
++				break;
++			trim_a = (srcval & src->trim_a_mask) >> src->trim_a_shift;
++			/* AND with 0xffffffff is a no-op; ports 1/2 use that as the
++			 * mask because the decompiled source applies no mask there
++			 * at all before the shift -- kept explicit rather than
++			 * special-cased, so this line means the same thing for
++			 * every port.
++			 */
++			trim_b = (srcval & src->trim_b_mask) >> src->trim_b_shift;
++
++			qca8084_debug_write(bus, phy_addr, 0x180, 0x00f0,
++					     (trim_a & 0xf) << 4);
++			qca8084_debug_write(bus, phy_addr, 0x280, 0x001f,
++					     trim_b & 0x1f);
++
++			dev_info(bus->parent,
++				 "qca8084: port %d (phy 0x%x) calibrated, trim_a=0x%x trim_b=0x%x\n",
++				 port, phy_addr, trim_a, trim_b);
++		}
++	} else {
++		dev_info(bus->parent,
++			 "qca8084: gate register 0x%08x, calibration loop skipped\n",
++			 gate_reg);
++	}
++
++	/* final step: clear bits [21:20] of EPHY_CFG and settle */
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
++	if (!ret) {
++		qca8084_reg_write32(bus, QCA8084_EPHY_CFG, ephy_cfg & 0xffcfffffu);
++		usleep_range(11000, 12000);
++	}
++
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
++	if (!ret)
++		dev_info(bus->parent, "qca8084: EPHY_CFG = 0x%08x after preinit\n",
++			 ephy_cfg);
 +}
 +
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -373,6 +443,9 @@
- 		return ret;
- 	}
+@@ -367,6 +641,31 @@
+ 	bus->parent = &pdev->dev;
+ 	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
-+	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit"))
++	/* ORDERING BUG, fixed: this must run BEFORE of_mdiobus_register(),
++	 * not after. of_mdiobus_register() is what walks the DTS's
++	 * explicit-reg ethernet-phy@N children and probes each address
++	 * synchronously as part of registering the bus -- that is the source
++	 * of the "MDIO device at address N is missing" messages. Calling
++	 * preinit afterwards means the chip gets clocked/reset/calibrated
++	 * only after the scan that needed it has already run and failed.
++	 *
++	 * Two consequences of running this early, both handled inside
++	 * qca8084_preinit() itself: (1) bus->mdio_lock is only initialised
++	 * INSIDE __mdiobus_register(), so preinit uses bus->read/write
++	 * directly rather than the generic locked mdiobus_read/write wrappers
++	 * -- safe here because the bus is not yet visible to anything else,
++	 * so there is nothing to race with; (2) the MDIO controller's own
++	 * clock/divider setup normally runs as part of registration too, so
++	 * preinit calls bus->reset() itself first. bus->read/write/reset and
++	 * bus->parent are all already assigned above.
++	 */
++	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit")) {
++		dev_info(&pdev->dev, "qca8084: MARKER preinit call starting\n");
 +		qca8084_preinit(bus);
++		dev_info(&pdev->dev, "qca8084: MARKER preinit call finished\n");
++	}
 +
- 	platform_set_drvdata(pdev, bus);
- 
- 	return 0;
++	dev_info(&pdev->dev, "qca8084: MARKER about to call of_mdiobus_register\n");
+ 	ret = of_mdiobus_register(bus, pdev->dev.of_node);
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "Cannot register MDIO bus!\n");
