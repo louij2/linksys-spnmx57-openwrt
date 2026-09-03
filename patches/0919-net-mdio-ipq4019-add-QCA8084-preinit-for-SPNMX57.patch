@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,534 @@
+@@ -48,6 +51,568 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -260,6 +260,40 @@ hand, and is commented as such.
 +	u32 delay_us, post_delay_us;
 +	u32 reg;
 +	int port, ret;
++
++	/* Is the SoC's CMN PLL actually running?
++	 *
++	 * This is a diagnostic for the leading explanation of why the four
++	 * EPHYs never appear. The CMN PLL at 0x0009b000 generates the ethernet
++	 * reference clocks handed to the external PHY package. If it is not
++	 * locked, the QCA8084's own gp0..gp3_sys_clk domains have nothing to
++	 * run from, so the four EPHY cores and their MDIO slaves are dead --
++	 * while the switch die's register window, clocked by this host's own
++	 * MDC, keeps answering and keeps latching every write we read back.
++	 * That is exactly the split we observe, and it is the one class of
++	 * explanation in which "all 27 writes verified" proves nothing, since
++	 * none of those registers are inside the EPHY clock domain.
++	 *
++	 * Bit 2 of 0x0009b064 is the lock status. Read it directly rather than
++	 * inferring anything: if it is already set then the bootloader locked
++	 * the PLL, and this whole line of reasoning is refuted for free.
++	 */
++	{
++		void __iomem *cmn = ioremap(0x0009b000, 0x800);
++
++		if (!cmn) {
++			dev_warn(bus->parent, "qca8084: cmn pll ioremap failed\n");
++		} else {
++			u32 lock = readl(cmn + 0x064);
++
++			dev_info(bus->parent,
++				 "qca8084: CMN PLL 9b064=%08x (lock bit2 %s) 9b028=%08x 9b780=%08x 9b784=%08x\n",
++				 lock, (lock & 0x4) ? "SET, locked" : "CLEAR, NOT locked",
++				 readl(cmn + 0x028), readl(cmn + 0x780),
++				 readl(cmn + 0x784));
++			iounmap(cmn);
++		}
++	}
 +
 +	/* The bus-level PHY reset line.
 +	 *
@@ -577,7 +611,7 @@ hand, and is commented as such.
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -367,6 +898,33 @@
+@@ -367,6 +932,33 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  

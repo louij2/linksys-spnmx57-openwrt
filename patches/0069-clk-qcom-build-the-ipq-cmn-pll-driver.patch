@@ -1,0 +1,111 @@
+From: SPNMX57 port
+Subject: [PATCH] clk: qcom: actually build the IPQ CMN PLL driver
+
+0063-v6.14-clk-qcom-Add-CMN-PLL-clock-controller-driver-for-IPQ-SoC.patch
+adds drivers/clk/qcom/ipq-cmn-pll.c and nothing else. The upstream commit it
+comes from also adds the Kconfig entry, the Makefile line and the shared
+dt-bindings header; all three are missing here, so the symbol IPQ_CMN_PLL does
+not exist, the file is never compiled, and it would not compile if it were.
+target/linux/qualcommax/config-6.12 carries a stale
+"# CONFIG_IPQ_CMN_PLL is not set" for a symbol Kconfig never defines, which is
+what makes this easy to miss: it reads as a deliberate choice rather than a
+dropped hunk.
+
+The indices in the restored header follow the driver's own output-clock array
+order, index 0 being the core PLL, matching the convention that
+qcom,ipq5018-cmn-pll.h (added by 0065) already uses.
+
+The consequence is not cosmetic on IPQ5018. The CMN PLL generates the ethernet
+reference clocks handed to the external PHY package.
+0067-v6.18-arm64-dts-ipq5018-Add-CMN-PLL-node.patch adds a cmn_pll node with
+assigned-clock-rates-u64 = 9600000000, but with no driver bound to that node
+nothing applies it, and the PLL is left in whatever state the bootloader
+happened to leave it in.
+
+On the Linksys SPNMX57 the vendor U-Boot only brings this PLL up inside a
+branch gated on a /gmac_cfg node being present in its FDT, so it cannot be
+relied on. The symptom there is very specific: the QCA8386 switch die answers
+MDIO perfectly and latches every register write, because that path is clocked
+by the host's own MDC, while the four QCA8084 EPHYs behind it never appear on
+the bus at all, because their gp0..gp3_sys_clk domains have no reference clock
+to run from.
+
+--- a/drivers/clk/qcom/Kconfig
++++ b/drivers/clk/qcom/Kconfig
+@@ -190,6 +190,16 @@
+ 	  Say Y if you want to support CPU frequency scaling on
+ 	  ipq based devices.
+ 
++config IPQ_CMN_PLL
++	tristate "IPQ CMN PLL Clock Controller"
++	depends on ARM64 || COMPILE_TEST
++	help
++	  Support for CMN PLL clock controller on IPQ platform. The
++	  CMN PLL feeds the reference clocks to each ethernet device
++	  on the SoC.
++	  Say Y or M if you want to support CMN PLL clock on the IPQ
++	  based devices.
++
+ config IPQ_GCC_4019
+ 	tristate "IPQ4019 Global Clock Controller"
+ 	help
+--- a/drivers/clk/qcom/Makefile
++++ b/drivers/clk/qcom/Makefile
+@@ -30,6 +30,7 @@
+ obj-$(CONFIG_IPQ_APSS_PLL) += apss-ipq-pll.o
+ obj-$(CONFIG_IPQ_APSS_6018) += apss-ipq6018.o
+ obj-$(CONFIG_IPQ_GCC_4019) += gcc-ipq4019.o
++obj-$(CONFIG_IPQ_CMN_PLL) += ipq-cmn-pll.o
+ obj-$(CONFIG_IPQ_GCC_5018) += gcc-ipq5018.o
+ obj-$(CONFIG_IPQ_GCC_5332) += gcc-ipq5332.o
+ obj-$(CONFIG_IPQ_GCC_6018) += gcc-ipq6018.o
+--- a/include/dt-bindings/clock/qcom,ipq5424-cmn-pll.h
++++ b/include/dt-bindings/clock/qcom,ipq5424-cmn-pll.h
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
++/*
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef _DT_BINDINGS_CLK_QCOM_IPQ5424_CMN_PLL_H
++#define _DT_BINDINGS_CLK_QCOM_IPQ5424_CMN_PLL_H
++
++/* CMN PLL core clock. */
++#define IPQ5424_CMN_PLL_CLK		0
++
++/* The output clocks from CMN PLL of IPQ5424. */
++#define IPQ5424_XO_24MHZ_CLK		1
++#define IPQ5424_SLEEP_32KHZ_CLK		2
++#define IPQ5424_PCS_31P25MHZ_CLK	3
++#define IPQ5424_NSS_300MHZ_CLK		4
++#define IPQ5424_PPE_375MHZ_CLK		5
++#define IPQ5424_ETH0_50MHZ_CLK		6
++#define IPQ5424_ETH1_50MHZ_CLK		7
++#define IPQ5424_ETH2_50MHZ_CLK		8
++#define IPQ5424_ETH_25MHZ_CLK		9
++#endif
+--- a/include/dt-bindings/clock/qcom,ipq-cmn-pll.h
++++ b/include/dt-bindings/clock/qcom,ipq-cmn-pll.h
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
++/*
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef _DT_BINDINGS_CLK_QCOM_IPQ_CMN_PLL_H
++#define _DT_BINDINGS_CLK_QCOM_IPQ_CMN_PLL_H
++
++/* CMN PLL core clock. */
++#define CMN_PLL_CLK			0
++
++/* The output clocks from CMN PLL of IPQ9574. */
++#define XO_24MHZ_CLK			1
++#define SLEEP_32KHZ_CLK			2
++#define PCS_31P25MHZ_CLK		3
++#define NSS_1200MHZ_CLK			4
++#define PPE_353MHZ_CLK			5
++#define ETH0_50MHZ_CLK			6
++#define ETH1_50MHZ_CLK			7
++#define ETH2_50MHZ_CLK			8
++#define ETH_25MHZ_CLK			9
++#endif
