@@ -222,17 +222,34 @@
 	reset-post-delay-us = <50000>;
 
 	/*
-	 * The 32 diagnostic phy stubs that used to sit here are gone. They
-	 * existed to make of_mdiobus_register() probe every address and print
-	 * "MDIO device at address N is missing", which was the only
-	 * SSDK-independent way to see the bus map on a cold chip. The preinit
-	 * patch now scans all 32 addresses itself and logs what answers, which
-	 * is strictly better and does not put 14 warnings in every boot log.
-	 * Set "qcom,qca8084-preinit-debug" above to turn that scan back on.
+	 * Real phy nodes for the four QCA8084 EPHYs.
 	 *
-	 * Real phy nodes for the four EPHYs at 1,2,3,4 belong here once they
-	 * actually answer MDIO, wrapped in a phy package container.
+	 * These are not the old diagnostic stubs, which existed only to make
+	 * of_mdiobus_register() probe every address and print what was missing.
+	 * These four are the actual PHYs, and they are needed because qca-ssdk
+	 * looks up a Linux phy_device for each port's phy_address and refuses
+	 * to continue without one:
+	 *
+	 *   hsl_phy_phydev_get: ERROR: phy_addr 1 phydev is NULL
+	 *
+	 * They answer now, reporting PHY ID 0x004dd180 (QCA8084_PHY), which is
+	 * why declaring them is finally meaningful rather than noise.
 	 */
+	ephy01: ethernet-phy@1 {
+		reg = <0x01>;
+	};
+
+	ephy02: ethernet-phy@2 {
+		reg = <0x02>;
+	};
+
+	ephy03: ethernet-phy@3 {
+		reg = <0x03>;
+	};
+
+	ephy04: ethernet-phy@4 {
+		reg = <0x04>;
+	};
 
 };
 
