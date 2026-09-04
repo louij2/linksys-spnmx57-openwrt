@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,19 +51,971 @@
+@@ -48,19 +51,1086 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -131,6 +131,10 @@ hand, and is commented as such.
 +#define QCA8084_GLOBAL_CTL	0x0c800308u
 +#define QCA8084_RCGR_CMD_UPDATE	0x1u
 +#define QCA8084_RCGR_SRC_SEL	0x700u
++/* RCGR_HDIV, bits [4:0]. The vendor's rate maths is prate/rate = (div + 1)/2,
++ * so div = (prate * 2 / rate) - 1.
++ */
++#define QCA8084_RCGR_HDIV	0x1fu
 +/* register type tag qca-ssdk puts in the top nibble, zero for the QCA8386 */
 +#define SSDK_SWITCH_REG_TYPE_MASK	0xf0000000u
 +
@@ -361,7 +365,7 @@ hand, and is commented as such.
 + * switch-core state and would not be writable with the core unclocked.
 + */
 +static int qca8084_rcg_commit(struct mii_bus *bus, const char *what,
-+			      u32 rcg_off, u32 src)
++			      u32 rcg_off, u32 src, u32 div)
 +{
 +	u32 cfg_reg = QCA8084_CLK_BASE + rcg_off;
 +	u32 cmd_reg = QCA8084_CLK_BASE + rcg_off - 4;
@@ -375,8 +379,15 @@ hand, and is commented as such.
 +		return ret;
 +	}
 +
++	dev_info(bus->parent,
++		 "qca8084: %s RCG cfg 0x%08x before = 0x%08x (src %u, div %u)\n",
++		 what, cfg_reg, val, (val & QCA8084_RCGR_SRC_SEL) >> 8,
++		 val & QCA8084_RCGR_HDIV);
++
 +	val &= ~QCA8084_RCGR_SRC_SEL;
 +	val |= (src << 8) & QCA8084_RCGR_SRC_SEL;
++	val &= ~QCA8084_RCGR_HDIV;
++	val |= div & QCA8084_RCGR_HDIV;
 +	ret = qca8084_reg_write32(bus, cfg_reg, val);
 +	if (ret)
 +		return ret;
@@ -393,8 +404,8 @@ hand, and is commented as such.
 +			break;
 +		if (!(val & QCA8084_RCGR_CMD_UPDATE)) {
 +			dev_info(bus->parent,
-+				 "qca8084: %s RCG committed, src %u, after %d us\n",
-+				 what, src, i);
++				 "qca8084: %s RCG committed, src %u div %u, after %d us\n",
++				 what, src, div, i);
 +			return 0;
 +		}
 +		udelay(1);
@@ -430,6 +441,47 @@ hand, and is commented as such.
 +static void qca8084_sw_write(struct mii_bus *bus, u32 reg, u32 val)
 +{
 +	qca8084_reg_write32(bus, reg & ~SSDK_SWITCH_REG_TYPE_MASK, val);
++}
++
++/* Sample and log each EPHY's link state.
++ *
++ * BMSR bit 2 is link status and it latches low, so read it twice and trust the
++ * second. Register 0x11 is the QCA808x-family PHY-specific status: bit 10 is
++ * link, bits [15:14] speed (0 = 10M, 1 = 100M, 2 = 1000M, 3 = 2500M), bit 13
++ * duplex.
++ *
++ * Timing is the whole point of taking this more than once. Autonegotiation
++ * takes seconds, and preinit runs about two seconds into boot, so a single
++ * sample taken right after the PHY resets will always say "link down" whether
++ * or not a cable is present -- which is exactly the misleading result that
++ * prompted this.
++ */
++static void qca8084_sample_ephy_link(struct mii_bus *bus, const char *when)
++{
++	int addr;
++
++	for (addr = 1; addr <= 4; addr++) {
++		int bmcr, bmsr, stat;
++
++		bmcr = bus->read(bus, addr, MII_BMCR);
++		bus->read(bus, addr, MII_BMSR);		/* clear the latch */
++		bmsr = bus->read(bus, addr, MII_BMSR);
++		stat = bus->read(bus, addr, 0x11);
++
++		if (bmcr < 0 || bmsr < 0)
++			continue;
++
++		dev_info(bus->parent,
++			 "qca8084: EPHY %d %s: BMCR 0x%04x BMSR 0x%04x link %s | STATUS 0x%04x link %s speed %s %s\n",
++			 addr, when, bmcr, bmsr,
++			 (bmsr & BMSR_LSTATUS) ? "UP" : "down",
++			 stat,
++			 (stat & BIT(10)) ? "UP" : "down",
++			 ((stat >> 14) & 3) == 3 ? "2500M" :
++			 ((stat >> 14) & 3) == 2 ? "1000M" :
++			 ((stat >> 14) & 3) == 1 ? "100M" : "10M",
++			 (stat & BIT(13)) ? "full" : "half");
++	}
 +}
 +
 +static void qca8084_preinit(struct mii_bus *bus)
@@ -477,6 +529,17 @@ hand, and is commented as such.
 +			iounmap(cmn);
 +		}
 +	}
++
++	/* Sampled before this driver touches anything. On a cold boot the chip
++	 * is still in reset and this will read nothing useful, but after an
++	 * unbind/rebind it reports the state the previous session settled into,
++	 * cable and autonegotiation included. That is the only runtime view of
++	 * PHY link this port has:
++	 *
++	 *   echo 90000.mdio > /sys/bus/platform/drivers/ipq4019-mdio/unbind
++	 *   echo 90000.mdio > /sys/bus/platform/drivers/ipq4019-mdio/bind
++	 */
++	qca8084_sample_ephy_link(bus, "as found");
 +
 +	/* The bus-level PHY reset line.
 +	 *
@@ -632,7 +695,19 @@ hand, and is commented as such.
 +	 * and mht_sys_clk_pdata in the vendor driver, whose first entry is
 +	 * { MHT_XO_CLK_RATE_50M, MHT_P_XO, 0 }.
 +	 */
-+	qca8084_rcg_commit(bus, "switch core", 0x004, 0);
++	/* The switch core RCG is deliberately left alone.
++	 *
++	 * It wants 312.5 MHz, and per mht_switch_core_pdata the only parent that
++	 * can produce that is index 1, UNIPHY1_TX312P5M. But that clock comes
++	 * from the SoC's uniphy, which is not up this early, so committing the
++	 * switch to it here fails: the update bit never clears.
++	 *
++	 *   switch core RCG update never cleared (cmd 0x0c800000 = 0x00000001)
++	 *
++	 * qca-ssdk repoints this parent itself once the uniphy is running, in
++	 * ssdk_mht_gcc_common_clk_parent_enable(). Enabling the branch is still
++	 * right and is kept.
++	 */
 +	qca8084_clk_enable(bus, QCA8084_SWITCH_CORE_CBCR);
 +	qca8084_reset_pulse(bus, QCA8084_SWITCH_CORE_CBCR);
 +
@@ -641,7 +716,14 @@ hand, and is commented as such.
 +	 * has to be committed once before their branches are enabled further
 +	 * down.
 +	 */
-+	qca8084_rcg_commit(bus, "gephy/serdes sys", 0x1a4, 0);
++	/* The four GEPHY and two SerDes sys clocks want 25 MHz from the 50 MHz
++	 * XO (mht_sys_clk_pdata, mht_sys_clk_support_rates), so src 0 and
++	 * div = (50 * 2 / 25) - 1 = 3. Only the source was being set before,
++	 * leaving the divider at whatever reset left behind -- and a GEPHY
++	 * running its DSP off the wrong clock still answers MDIO perfectly
++	 * while never achieving link, which is exactly what was observed.
++	 */
++	qca8084_rcg_commit(bus, "gephy/serdes sys", 0x1a4, 0, 3);
 +
 +	/* Read the SKU the way the vendor reads it: with the MDIO clock slowed
 +	 * right down, then put back.
@@ -816,7 +898,30 @@ hand, and is commented as such.
 +	 * skips the calibration loop on this silicon. Running it anyway is the
 +	 * unvalidated deviation, not the other way round.
 +	 */
-+	if (!ret && vendor_gate) {
++	/* The gate is bypassed again, and this time on evidence rather than as a
++	 * shot in the dark.
++	 *
++	 * The gate is a field in a fuse row, and the vendor runs the calibration
++	 * only when it reads 1 or 2. On this part it reads 8. But this part also
++	 * reports an SKU of 0x265, which is none of the four the vendor driver
++	 * knows (QCA8082 0x1dc, QCA8084 0x1dd, QCA8085 0x1de, QCA8386 0x1df),
++	 * confirmed at the slowest MDIO clock as well as the normal one. The
++	 * vendor's interpretation of its own fuse fields cannot be assumed to
++	 * carry over to a variant it does not enumerate.
++	 *
++	 * What this calibration does is write fuse-derived trim values into each
++	 * EPHY's analogue debug registers. Skipping it leaves the analogue front
++	 * end untrimmed, and the symptom fits exactly: all four PHYs answer MDIO
++	 * perfectly, advertise sensible capabilities in BMSR, and never complete
++	 * autonegotiation or raise link with a live cable in.
++	 *
++	 * It was run once before with the gate bypassed and made no difference,
++	 * but that was while the indirect protocol was still dropping address
++	 * bits [7:5], so the trim sources were read from the wrong registers and
++	 * the values written were meaningless. It is worth exactly one honest
++	 * attempt now that the addressing is correct.
++	 */
++	if (!ret) {
 +		for (port = 0; port < 4; port++) {
 +			const struct qca8084_calib_src *src = &qca8084_calib_srcs[port];
 +			u32 srcval, ephy_cfg_now;
@@ -987,6 +1092,16 @@ hand, and is commented as such.
 +	 * rather than a different chip.
 +	 */
 +
++	/* Autonegotiation needs seconds, not milliseconds. Sampling only once
++	 * straight after the resets reports "link down" on every port whether
++	 * or not a cable is in, which is worse than not sampling at all.
++	 */
++	qca8084_sample_ephy_link(bus, "post-init");
++	msleep(3000);
++	qca8084_sample_ephy_link(bus, "at +3s");
++	msleep(3000);
++	qca8084_sample_ephy_link(bus, "at +6s");
++
 +	/* Final bus map, logged unconditionally. of_mdiobus_register() only
 +	 * reports the addresses the DTS names, so this is the only way to see
 +	 * what the whole bus looks like once bring-up has finished.
@@ -1017,7 +1132,7 @@ hand, and is commented as such.
  				  (busy & MDIO_CMD_ACCESS_BUSY) == 0,
  				  IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT);
  }
-@@ -75,22 +1030,22 @@
+@@ -75,22 +1145,22 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1045,7 +1160,7 @@ hand, and is commented as such.
  
  	/* Wait read complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -98,13 +1053,13 @@
+@@ -98,13 +1168,13 @@
  
  	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_READ;
  
@@ -1061,7 +1176,7 @@ hand, and is commented as such.
  }
  
  static int ipq4019_mdio_read_c22(struct mii_bus *bus, int mii_id, int regnum)
-@@ -116,26 +1071,26 @@
+@@ -116,26 +1186,26 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1093,7 +1208,7 @@ hand, and is commented as such.
  }
  
  static int ipq4019_mdio_write_c45(struct mii_bus *bus, int mii_id, int mmd,
-@@ -148,30 +1103,30 @@
+@@ -148,30 +1218,30 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1131,7 +1246,7 @@ hand, and is commented as such.
  
  	/* Wait write complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -191,22 +1146,22 @@
+@@ -191,22 +1261,22 @@
  		return -ETIMEDOUT;
  
  	/* Enter Clause 22 mode */
@@ -1159,7 +1274,7 @@ hand, and is commented as such.
  
  	/* Wait write complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -234,10 +1189,10 @@
+@@ -234,10 +1304,10 @@
  	for (div = 8; div <= 256; div *= 2) {
  		/* The requested rate is supported by the div */
  		if (priv->mdc_rate == DIV_ROUND_UP(ahb_rate, div)) {
@@ -1172,7 +1287,7 @@ hand, and is commented as such.
  
  			return 0;
  		}
-@@ -256,10 +1211,10 @@
+@@ -256,10 +1326,10 @@
  	/* To indicate CMN_PLL that ethernet_ldo has been ready if platform resource 1
  	 * is specified in the device tree.
  	 */
@@ -1186,7 +1301,7 @@ hand, and is commented as such.
  		fsleep(IPQ_PHY_SET_DELAY_US);
  	}
  
-@@ -296,7 +1251,7 @@
+@@ -296,7 +1366,7 @@
  		ahb_rate = clk_get_rate(priv->mdio_clk);
  
  	/* Check what is the current div set */
@@ -1195,7 +1310,7 @@ hand, and is commented as such.
  	div = FIELD_GET(MDIO_MODE_DIV_MASK, val);
  
  	/* div is not set to the default value of /256
-@@ -336,9 +1291,9 @@
+@@ -336,9 +1406,9 @@
  
  	priv = bus->priv;
  
@@ -1208,7 +1323,7 @@ hand, and is commented as such.
  
  	priv->mdio_clk = devm_clk_get_optional(&pdev->dev, "gcc_mdio_ahb_clk");
  	if (IS_ERR(priv->mdio_clk))
-@@ -353,9 +1308,9 @@
+@@ -353,9 +1423,9 @@
  	/* This resource is optional */
  	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
  	if (res) {
@@ -1221,7 +1336,7 @@ hand, and is commented as such.
  	}
  
  	bus->name = "ipq4019_mdio";
-@@ -364,9 +1319,42 @@
+@@ -364,9 +1434,42 @@
  	bus->read_c45 = ipq4019_mdio_read_c45;
  	bus->write_c45 = ipq4019_mdio_write_c45;
  	bus->reset = ipq_mdio_reset;
