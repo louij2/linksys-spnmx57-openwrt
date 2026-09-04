@@ -5,7 +5,11 @@ Fibre supplied, Qualcomm **IPQ5018**, vendor codename **Palm15**).
 
 ## Status
 
-OpenWrt boots and everything except Ethernet works. There is a **usable release**
+OpenWrt boots and everything except the Ethernet **data path** works.
+The PHYs link (2.5G and 1G, negotiated and stable) and the switch forwards,
+but frames never reach the SoC: `rx_packets` on `lan` stays 0 while
+`tx_packets` climbs. **This is not yet a usable router.** See
+"Known-broken: CPU-port RX" below. There is a **usable release**
 for anyone who wants the box as a wireless repeater in the meantime: see
 [Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases).
 
@@ -17,7 +21,9 @@ for anyone who wants the box as a wireless repeater in the meantime: see
 | LEDs, buttons, serial, SSH | works |
 | sysupgrade + self-recovery | works |
 | QCA8386 switch register access | works, reads and writes |
-| **Ethernet** | **does not** |
+| **Ethernet: PHY link** | **works** — 2.5G and 1G negotiated, stable |
+| **Ethernet: switch forwarding** | **works** — QCA8386 ports and CPU port MACs enabled |
+| **Ethernet: traffic to/from the CPU** | **does not** — `rx_packets` stays 0 |
 
 The `-22` that this repo started from is long gone. The current position is
 narrower and much better understood: the switch is fully reachable and the entire
@@ -108,3 +114,47 @@ UART is what makes this practical: a bad DTS becomes a log to read rather than
 a brick. Before the first flash, confirm whether U-Boot offers `tftpboot` plus
 `bootm`, so candidates can be booted from RAM and nothing needs writing to
 flash until something works. `docs/bench-test.md` covers checking that.
+
+
+## Known-broken: CPU-port RX (help welcome)
+
+`lan` shows `rx_packets = 0`, `rx_errors = 0`, while `tx_packets` climbs.
+Nothing at all arrives at the SoC's MAC, not even malformed frames.
+
+What is already ruled out, with evidence:
+
+- **The PHYs.** All four QCA8084 EPHYs link and negotiate correctly
+  (2500M full on one port, 1000M full on another), with valid autoneg
+  codewords, stable across minutes.
+- **The QCA8386 switch.** Its `PORT_STATUS` registers (`0x07c + port*4`) show
+  TXMAC and RXMAC enabled on the linked ports *and on port 0*, the CPU port
+  facing the SoC. It is forwarding.
+- **A speed mismatch on the SGMII uplink.** The `fixed-link speed = <1000>`
+  under `&dp2` is cosmetic; qca-ssdk drives the real rate from
+  `switch_mac_mode` and the `port@0` `forced-speed`. It is identical in the
+  last-known-good commit.
+
+The remaining suspect is the SoC ESS RX MAC for port 2 (MAC1). qca-ssdk's
+`adpt_mp_port_netdev_change_notify()` logs
+
+```
+adpt_mp_port_netdev_change_notify: netdev change notify with incorrect port 0
+ssdk_dev_event: netdev change notify failed
+```
+
+and returns before `adpt_mp_port_rxmac_status_set(A_TRUE)`. The port id comes
+from `qca_ssdk_phydev_to_port(dev_id, dev->phydev)`, and `dev->phydev` is the
+fixed-link software PHY on `&dp2`. Port 2 is a MAC-only forced port with no
+`phy_address`, so there is no phydev in the ssdk's tables to match and the
+lookup structurally returns 0.
+
+Note that simply adding `ESS_PORT0` to the port bitmap to get past the check
+is **not** a fix: three lines later the function indexes
+`priv->port_old_link[port_id - 1]`, which for `port_id = 0` is index -1.
+
+`qca_mp_portctrl_hw_init()` (`src/init/ssdk_mp.c`) enables the RX MAC at init
+for ports with `PHY_F_FORCE`, which `forced-speed` in the DTS should set for
+port 2 — so why that does not take effect is the open question.
+
+These registers are memory-mapped at `0x39c00000` and not reachable over MDIO,
+so unlike the PHY side this cannot be poked at runtime; it needs a build.
