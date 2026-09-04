@@ -50,7 +50,7 @@
 
 		/* [vendor] 0x0c = MAC_MODE_SGMII_PLUS on the uplink,
 		 * 0xff = MAC_MODE_DISABLED on the unused second uplink */
-		switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
+		switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
 		switch_mac_mode1 = <MAC_MODE_DISABLED>;
 
 		/* [vendor] port0 is the CPU port, ports 1-4 are LAN,
@@ -63,7 +63,7 @@
 			/* [vendor] CPU port, fixed 2.5G, no PHY */
 			port@0 {
 				port_id = <0>;
-				forced-speed = <2500>;
+				forced-speed = <1000>;
 				forced-duplex = <1>;
 			};
 
@@ -114,7 +114,34 @@
 	status = "okay";
 
 	/* [vendor] SGMII+ toward the QCA8386, not SGMII_CHANNEL0 as on the 56 */
-	switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
+	switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
+
+	/*
+	 * The port bitmap for the SoC ESS. Without these the RX MAC is never
+	 * enabled and nothing is ever received.
+	 *
+	 * ssdk_dt_parse_port_bmp() reads switch_cpu_bmp, switch_lan_bmp and
+	 * switch_wan_bmp with a single combined condition, so all three have to
+	 * be present or none of them are used; it then sets the working bitmap
+	 * to lan_bmp | wan_bmp. Declaring none of them left it at zero, which
+	 * logs the mild-looking "port_bmp doesn't exist!" at boot and then bites
+	 * much later: adpt_mp_port_netdev_change_notify() checks the netdev's
+	 * port against that bitmap, fails it with
+	 *
+	 *   adpt_mp_port_netdev_change_notify: netdev change notify with incorrect port 0
+	 *   ssdk_dev_event: netdev change notify failed
+	 *
+	 * and returns before reaching adpt_mp_port_rxmac_status_set(A_TRUE).
+	 * The transmit path is unaffected, which is exactly the symptom seen
+	 * with a live cable in port 1: tx_packets climbing, rx_packets stuck
+	 * at 0.
+	 *
+	 * Port 1 is MAC0's internal GE PHY, port 2 is MAC1 into the QCA8386.
+	 * There is no CPU port on this side of the link.
+	 */
+	switch_cpu_bmp = <0>;
+	switch_lan_bmp = <(ESS_PORT1 | ESS_PORT2)>;
+	switch_wan_bmp = <0>;
 
 	qcom,port_phyinfo {
 		/*
@@ -142,7 +169,7 @@
 		 */
 		port@1 {
 			port_id = <2>;
-			forced-speed = <2500>;
+			forced-speed = <1000>;
 			forced-duplex = <1>;
 		};
 	};
