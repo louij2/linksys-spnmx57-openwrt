@@ -245,6 +245,10 @@
 	 * line again before cutting another release image. */
 	qcom,qca8084-preinit-debug;
 
+	/* 2026-09-04 bisect: reproduce the preinit an EPHY was last seen linked with:
+	 * the U-Boot software trims on, the analogue block (hw_init/PLL/LDO) off. */
+	qcom,qca8084-software-trims;
+
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
 

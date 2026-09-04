@@ -28,7 +28,7 @@ hand, and is commented as such.
 ---
 --- a/drivers/net/mdio/mdio-ipq4019.c
 +++ b/drivers/net/mdio/mdio-ipq4019.c
-@@ -8,10 +8,13 @@
+@@ -8,10 +8,16 @@
  #include <linux/kernel.h>
  #include <linux/module.h>
  #include <linux/of_address.h>
@@ -39,10 +39,13 @@ hand, and is commented as such.
  #include <linux/clk.h>
 +#include <linux/gpio/consumer.h>
 +#include <linux/mii.h>
++#include <linux/debugfs.h>
++#include <linux/workqueue.h>
++#include <linux/uaccess.h>
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,19 +51,1086 @@
+@@ -48,19 +54,1791 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -138,6 +141,28 @@ hand, and is commented as such.
 +/* register type tag qca-ssdk puts in the top nibble, zero for the QCA8386 */
 +#define SSDK_SWITCH_REG_TYPE_MASK	0xf0000000u
 +
++/* The EPHYs' own registers, from qca-ssdk include/hsl/phy/qca8084_phy.h.
++ *
++ * These are the analogue side of each PHY, reached over Clause 22 on the
++ * PHY's own MDIO address rather than through the 32-bit indirect window.
++ * The PLL and LDO enables are what qca8084_phy_pll_on() and
++ * qca8084_phy_ldo_set() drive; the rest are the three writes
++ * qca8084_phy_hw_init() makes and comments as link fixes.
++ */
++#define QCA8084_PHY_DEBUG_CTRL0		0x1fu	/* CONTROL_DEBUG_REGISTER0 */
++#define QCA8084_PHY_1588_P2_EN		0x0002u
++#define QCA8084_PHY_AFE25_CMN_6_MII	0x380u
++#define QCA8084_PHY_AFE25_PLL_EN	0x8000u
++#define QCA8084_PHY_AFE25_CMN_2_MII	0x180u
++#define QCA8084_PHY_AFE25_LDO_EN	0x2000u
++/* DEBUG_ANA_INTERFACE_CLK_SEL, bits [7:4]; ADC_FALLING is 0xf0, ADC_RISING 0 */
++#define QCA8084_PHY_ANA_IF_CLK_SEL	0x8b80u
++#define QCA8084_PHY_ADC_EDGE_MASK	0x00f0u
++#define QCA8084_PHY_ADC_FALLING		0x00f0u
++/* MMD1 0x800a, "signal energy detect threshold to fix link issue" */
++#define QCA8084_PHY_MMD1_MSE_THRESH	0x800au
++#define QCA8084_PHY_MMD1_MSE_ENERGY_DET	0x51c6u
++
 +/* The bring-up sequence logs a lot: a read-back verdict for every register it
 + * writes, the strap addresses, the gate value, and a full 32-address bus scan.
 + * That is the right default while the port is being debugged and the wrong one
@@ -146,6 +171,31 @@ hand, and is commented as such.
 + * back. Warnings are never gated.
 + */
 +static bool qca8084_verbose;
++/* set by the "preinit nocal" knob command for the duration of one re-run:
++ * skip the U-Boot-transcribed software trims, which is what the vendor does
++ * on this silicon (efuse version 8 fails its gate), and let the hardware
++ * efuse load stand alone.
++ */
++static bool qca8084_skip_cal;
++/* set by "preinit cal": run the software trim loop even though the gate says
++ * the vendor would not, for experiments only
++ */
++static bool qca8084_force_cal;
++/* DTS choices, read at probe: "qcom,qca8084-software-trims" forces the
++ * software trim loop at boot (what the port did until 2026-09-04, and the
++ * state in which an EPHY was last seen linked); "qcom,qca8084-afe-power-on"
++ * runs the analogue block at boot (added 2026-09-04, measured as a no-op
++ * for PLL/LDO, and under suspicion for the line side since). Absent both,
++ * preinit is this morning's preinit plus read-only instrumentation.
++ */
++static bool qca8084_trims_at_boot;
++static bool qca8084_afe_at_boot;
++/* "preinit rst=<ms> post=<ms>": override the package reset assert time and
++ * the settle time after release for one run (0 = DTS/default). Upstream's
++ * nss_cc_qca8k holds the line 100 ms; the DTS default here is 10 ms.
++ */
++static unsigned int qca8084_rst_us_override;
++static unsigned int qca8084_post_us_override;
 +
 +#define qca8084_dbg(dev, fmt, ...)					\
 +	do {								\
@@ -241,8 +291,16 @@ hand, and is commented as such.
 +	/* --- ours --- */
  	struct clk *mdio_clk;
  	unsigned int mdc_rate;
- };
- 
++	/* runtime access, see qca8084_runtime_init() */
++	struct mii_bus *bus;
++	struct dentry *dbg_dir;
++	char dbg_out[1024];
++	struct delayed_work resample;
++	unsigned int resample_secs;
++	/* the package reset line, claimed once; a re-run must not re-request it */
++	struct gpio_desc *pkg_reset;
++};
++
 +/* Write, read back, and say in the log whether the value actually stuck.
 + *
 + * Every write in this sequence used to be issued blind, and that mattered:
@@ -325,10 +383,299 @@ hand, and is commented as such.
 +	val = bus->read(bus, phy_addr, 0x1e);
 +	if (val < 0)
 +		return val;
++	/* All-ones is what this controller hands back for a PHY that is not
++	 * answering -- in reset, or not at this address. The vendor's
++	 * __hsl_phy_modify_debug() aborts on it (PHY_INVALID_DATA) rather
++	 * than read-modify-writing 0xffff into an analogue register.
++	 */
++	if (val == 0xffff)
++		return -EIO;
 +	ret = bus->write(bus, phy_addr, 0x1d, debug_reg);
 +	if (ret < 0)
 +		return ret;
 +	return bus->write(bus, phy_addr, 0x1e, (val & ~mask) | set);
++}
++
++static int qca8084_debug_read(struct mii_bus *bus, int phy_addr, u16 debug_reg)
++{
++	int ret = bus->write(bus, phy_addr, 0x1d, debug_reg);
++
++	if (ret < 0)
++		return ret;
++	ret = bus->read(bus, phy_addr, 0x1e);
++	/* all-ones is "no answer", see qca8084_debug_write() */
++	return ret == 0xffff ? -EIO : ret;
++}
++
++/* Read and log the two analogue enables on one PHY.
++ *
++ * Returns true only if the PLL bit reads set on a PHY that answered. A PHY
++ * that did not answer is reported as such and counts as false; all-ones has
++ * every bit set and would otherwise read as "PLL on, LDO on", which is
++ * exactly the reading that has to be trustworthy here.
++ */
++static bool qca8084_log_afe(struct mii_bus *bus, int phy_addr, const char *when)
++{
++	int pll = qca8084_debug_read(bus, phy_addr, QCA8084_PHY_AFE25_CMN_6_MII);
++	int ldo = qca8084_debug_read(bus, phy_addr, QCA8084_PHY_AFE25_CMN_2_MII);
++
++	if (pll < 0 || ldo < 0) {
++		dev_info(bus->parent,
++			 "qca8084: phy 0x%x %s: AFE unreadable (pll %d, ldo %d)\n",
++			 phy_addr, when, pll, ldo);
++		return false;
++	}
++
++	dev_info(bus->parent,
++		 "qca8084: phy 0x%x %s: AFE25_CMN_6 0x%04x PLL %s | AFE25_CMN_2 0x%04x LDO %s\n",
++		 phy_addr, when, pll,
++		 (pll & QCA8084_PHY_AFE25_PLL_EN) ? "on" : "OFF",
++		 ldo,
++		 (ldo & QCA8084_PHY_AFE25_LDO_EN) ? "on" : "OFF");
++	return !!(pll & QCA8084_PHY_AFE25_PLL_EN);
++}
++
++/* The vendor reaches the EPHYs' MMD space over Clause 45, not the Clause 22
++ * indirect form: every hsl_phy_mmd_reg_write() in qca8084_phy.c passes
++ * is_c45 = A_TRUE. This bus has real C45 accessors and probe() assigns them
++ * before preinit runs, so use them rather than assuming the C22 indirect
++ * path behaves the same on this part.
++ */
++static int qca8084_mmd_write(struct mii_bus *bus, int phy_addr, int devad,
++			     u16 reg, u16 val)
++{
++	if (!bus->write_c45)
++		return -EOPNOTSUPP;
++	return bus->write_c45(bus, phy_addr, devad, reg, val);
++}
++
++/* qcaphy_sw_reset(): BMCR software reset, read-modify-write.
++ *
++ * The vendor does not wait for the bit to clear. We do, because the next
++ * thing we do is write analogue registers on the same PHY and a reset still
++ * in progress would eat them silently -- which is the failure mode this
++ * whole port keeps running into.
++ */
++static int qca8084_phy_soft_reset(struct mii_bus *bus, int phy_addr)
++{
++	int val, i;
++
++	val = bus->read(bus, phy_addr, MII_BMCR);
++	if (val < 0)
++		return val;
++	val = bus->write(bus, phy_addr, MII_BMCR, val | BMCR_RESET);
++	if (val < 0)
++		return val;
++
++	/* A healthy QCA808x clears the bit in well under 10 ms. The bound is
++	 * for an address nobody answers at, which reads all-ones and so never
++	 * clears; it should be reported, not waited on for a second.
++	 */
++	for (i = 0; i < 100; i++) {
++		usleep_range(1000, 2000);
++		val = bus->read(bus, phy_addr, MII_BMCR);
++		if (val >= 0 && val != 0xffff && !(val & BMCR_RESET))
++			return 0;
++	}
++
++	dev_warn(bus->parent,
++		 "qca8084: phy 0x%x software reset never cleared\n", phy_addr);
++	return -ETIMEDOUT;
++}
++
++/* CDT threshold table, qca8084_phy_cdt_thresh_init(), MMD3.
++ * CTRL3..CTRL7, CTRL9, CTRL13, then CTRL14 which takes the near-echo value.
++ */
++static const struct {
++	u16 reg;
++	u16 val;
++} qca8084_cdt_thresh[] = {
++	{ 0x8074, 0xc040 },	/* CDT_THRESH_CTRL3 */
++	{ 0x8075, 0xa060 },	/* CDT_THRESH_CTRL4 */
++	{ 0x8076, 0xc040 },	/* CDT_THRESH_CTRL5 */
++	{ 0x8077, 0xa060 },	/* CDT_THRESH_CTRL6 */
++	{ 0x8078, 0xc050 },	/* CDT_THRESH_CTRL7 */
++	{ 0x807a, 0xc060 },	/* CDT_THRESH_CTRL9 */
++	{ 0x807e, 0xb060 },	/* CDT_THRESH_CTRL13 */
++	{ 0x807f, 0x1eb0 },	/* CDT_THRESH_CTRL14, NEAR_ECHO_THRESH */
+ };
+ 
++/* qca8084_phy_hw_init(), minus the one step that writes nothing.
++ *
++ * Three of its four steps are commented in the vendor source as link fixes:
++ * the CDT thresholds, inverting the ADC clock edge to falling, and the
++ * signal energy detect threshold. The fourth, qca8084_phy_icc_init(), only
++ * reads an efuse and caches it; qca8084_phy_icc_fix_up() writes the value
++ * to debug 0x280 on link transitions, so it cannot affect first link and
++ * is left out.
++ *
++ * Provenance, corrected after checking the callers and not just the callee:
++ * the vendor runs this from ssdk_phy_driver_init(), which is BEFORE
++ * qca_mht_hw_init() and its switch reset, on PHYs the vendor U-Boot has
++ * already trimmed. qca-ssdk on this board runs the identical routine on
++ * every cold boot at ~11-14 s, so on a cold boot this copy is not a new
++ * experiment. It matters on an unbind/rebind, where preinit re-pulses the
++ * package resets and nothing re-runs the ssdk's PHY init afterwards.
++ *
++ * The software reset in the middle is the vendor's, not ours -- it is what
++ * qca8084_phy_adc_edge_set() does after changing the edge. The per-port
++ * trims this preinit writes into debug 0x180[7:4] / 0x280[4:0] come from
++ * the vendor U-Boot (FUN_4a94c630), not from the Linux driver; the vendor's
++ * Linux driver then resets the PHY without rewriting 0x180, so the debug
++ * registers are expected to survive it.
++ */
++static int qca8084_phy_hw_init(struct mii_bus *bus, int phy_addr)
++{
++	int i, ret;
++
++	for (i = 0; i < ARRAY_SIZE(qca8084_cdt_thresh); i++) {
++		ret = qca8084_mmd_write(bus, phy_addr, MDIO_MMD_PCS,
++					qca8084_cdt_thresh[i].reg,
++					qca8084_cdt_thresh[i].val);
++		if (ret < 0) {
++			dev_warn(bus->parent,
++				 "qca8084: phy 0x%x CDT thresh 0x%04x write failed (%d)\n",
++				 phy_addr, qca8084_cdt_thresh[i].reg, ret);
++			return ret;
++		}
++	}
++
++	/* "invert ADC clock edge as falling edge to fix link issue" */
++	ret = qca8084_debug_write(bus, phy_addr, QCA8084_PHY_ANA_IF_CLK_SEL,
++				  QCA8084_PHY_ADC_EDGE_MASK,
++				  QCA8084_PHY_ADC_FALLING);
++	if (ret < 0)
++		return ret;
++	ret = qca8084_phy_soft_reset(bus, phy_addr);
++	if (ret < 0)
++		return ret;
++
++	/* "configure signal energy detect threshold to fix link issue for
++	 * some chips"
++	 */
++	return qca8084_mmd_write(bus, phy_addr, MDIO_MMD_PMAPMD,
++				 QCA8084_PHY_MMD1_MSE_THRESH,
++				 QCA8084_PHY_MMD1_MSE_ENERGY_DET);
++}
++
++/* qca8084_phy_pll_on(): the analogue PLL enable, per PHY. */
++static int qca8084_phy_pll_on(struct mii_bus *bus, int phy_addr)
++{
++	int ret;
++
++	ret = qca8084_debug_write(bus, phy_addr, QCA8084_PHY_DEBUG_CTRL0,
++				  QCA8084_PHY_1588_P2_EN,
++				  QCA8084_PHY_1588_P2_EN);
++	if (ret < 0)
++		return ret;
++
++	ret = qca8084_debug_write(bus, phy_addr, QCA8084_PHY_AFE25_CMN_6_MII,
++				  QCA8084_PHY_AFE25_PLL_EN,
++				  QCA8084_PHY_AFE25_PLL_EN);
++	if (ret < 0)
++		return ret;
++
++	msleep(20);
++	return 0;
++}
++
++/* Power on the EPHY analogue front end -- or establish that it already is.
++ *
++ * qca8084_phy_pll_on() and qca8084_phy_ldo_set() are NOT on the vendor's
++ * boot path. Their only callers are the FAL_ERP_ACTIVE branch of
++ * _mht_port_erp_power_mode_set() (src/hsl/mht/mht_port_ctrl.c), the resume
++ * half of an explicit low-power API whose entry half is the only thing that
++ * ever turns these bits off. Port power-on for this chip is
++ * qcaphy_poweron(), a BMCR power-down clear, and BMCR 0x1140 shows that bit
++ * already clear. So on a vendor board the EPHYs link with PLL_EN and LDO_EN
++ * at whatever the silicon defaults to, and no software sets them. The
++ * "the AFE is never powered here" theory is therefore not supported by the
++ * vendor source; it is a hypothesis about the reset default, and this
++ * routine is written to test it, not to assume it.
++ *
++ * The decisive measurement is the read BEFORE the first write: debug 0x380
++ * bit 15 and debug 0x180 bit 13 on all four PHYs, after every package reset
++ * in this preinit, and again after the hw_init soft reset. If they already
++ * read set, the theory is dead and the writes below are a no-op. If they
++ * read clear, the writes are the fix. Either way this boot answers it.
++ *
++ * Order of the writes follows the vendor's resume path as far as it maps:
++ * hw_init first (it contains the soft reset), then the PLL on every PHY,
++ * then the LDOs. qca8084_phy_ldo_set() only ever touches two PHYs --
++ * ephy_addr[1] and ephy_addr[2], the PHYs of mht ports 2 and 3 -- because
++ * LDO1 and LDO2 are shared regulators driven from those two, and it only
++ * does so once every other PHY's PLL is on. That gate is read back here,
++ * not assumed.
++ */
++static void qca8084_analogue_power_on(struct mii_bus *bus)
++{
++	int phy_addr[4];
++	bool pll_on[4];
++	u32 ephy_cfg;
++	int i, ret;
++
++	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
++	if (ret) {
++		dev_warn(bus->parent,
++			 "qca8084: EPHY_CFG unreadable, skipping analogue power-on\n");
++		return;
++	}
++
++	for (i = 0; i < 4; i++)
++		phy_addr[i] = (ephy_cfg >> (i * 5)) & 0x1f;
++
++	/* The hardware default, after every reset in this preinit and before
++	 * anything here has written an analogue register.
++	 */
++	for (i = 0; i < 4; i++)
++		qca8084_log_afe(bus, phy_addr[i], "default, before hw_init");
++
++	for (i = 0; i < 4; i++) {
++		ret = qca8084_phy_hw_init(bus, phy_addr[i]);
++		if (ret < 0)
++			dev_warn(bus->parent,
++				 "qca8084: phy 0x%x hw init failed (%d)\n",
++				 phy_addr[i], ret);
++	}
++
++	/* Again after the hw_init soft reset, still before the PLL write */
++	for (i = 0; i < 4; i++)
++		qca8084_log_afe(bus, phy_addr[i], "after hw_init, before PLL write");
++
++	for (i = 0; i < 4; i++) {
++		ret = qca8084_phy_pll_on(bus, phy_addr[i]);
++		if (ret < 0)
++			dev_warn(bus->parent,
++				 "qca8084: phy 0x%x PLL enable failed (%d)\n",
++				 phy_addr[i], ret);
++	}
++
++	for (i = 0; i < 4; i++)
++		pll_on[i] = qca8084_log_afe(bus, phy_addr[i], "after PLL write");
++
++	/* LDO1/LDO2 are driven from mht ports 2 and 3, i.e. phy_addr[1] and
++	 * phy_addr[2]. The vendor gates on every *other* PHY's PLL being on,
++	 * which for the two we are about to touch means all four.
++	 */
++	if (!(pll_on[0] && pll_on[1] && pll_on[2] && pll_on[3])) {
++		dev_warn(bus->parent,
++			 "qca8084: not every PLL is on, skipping LDO enable as the vendor would\n");
++		return;
++	}
++
++	for (i = 1; i <= 2; i++) {
++		ret = qca8084_debug_write(bus, phy_addr[i],
++					  QCA8084_PHY_AFE25_CMN_2_MII,
++					  QCA8084_PHY_AFE25_LDO_EN,
++					  QCA8084_PHY_AFE25_LDO_EN);
++		if (ret < 0)
++			dev_warn(bus->parent,
++				 "qca8084: phy 0x%x LDO enable failed (%d)\n",
++				 phy_addr[i], ret);
++	}
++
++	for (i = 1; i <= 2; i++)
++		qca8084_log_afe(bus, phy_addr[i], "after LDO write");
 +}
 +
 +/* Per-port calibration source registers and the bitfield extraction each
@@ -447,8 +794,9 @@ hand, and is commented as such.
 + *
 + * BMSR bit 2 is link status and it latches low, so read it twice and trust the
 + * second. Register 0x11 is the QCA808x-family PHY-specific status: bit 10 is
-+ * link, bits [15:14] speed (0 = 10M, 1 = 100M, 2 = 1000M, 3 = 2500M), bit 13
-+ * duplex.
++ * link, bit 13 duplex, and speed in bits [9:7] (QCA808X_STATUS_SPEED_MASK
++ * 0x380: 0 = 10M, 0x80 = 100M, 0x100 = 1000M, 0x200 = 2500M). Earlier
++ * revisions decoded bits [15:14], the AR803x layout, which is wrong here.
 + *
 + * Timing is the whole point of taking this more than once. Autonegotiation
 + * takes seconds, and preinit runs about two seconds into boot, so a single
@@ -468,8 +816,18 @@ hand, and is commented as such.
 +		bmsr = bus->read(bus, addr, MII_BMSR);
 +		stat = bus->read(bus, addr, 0x11);
 +
-+		if (bmcr < 0 || bmsr < 0)
++		/* All-ones is a PHY that is not answering (held in reset, or
++		 * not at this address). It has every bit set, so without this
++		 * it logs as "link UP, 2500M full, PLL on, LDO on" -- which is
++		 * what the "as found" sample prints on a cold boot, before the
++		 * package reset is released, if it is allowed to.
++		 */
++		if (bmcr < 0 || bmsr < 0 || bmcr == 0xffff) {
++			dev_info(bus->parent,
++				 "qca8084: EPHY %d %s: no answer (BMCR read %d)\n",
++				 addr, when, bmcr);
 +			continue;
++		}
 +
 +		dev_info(bus->parent,
 +			 "qca8084: EPHY %d %s: BMCR 0x%04x BMSR 0x%04x link %s | STATUS 0x%04x link %s speed %s %s\n",
@@ -477,10 +835,18 @@ hand, and is commented as such.
 +			 (bmsr & BMSR_LSTATUS) ? "UP" : "down",
 +			 stat,
 +			 (stat & BIT(10)) ? "UP" : "down",
-+			 ((stat >> 14) & 3) == 3 ? "2500M" :
-+			 ((stat >> 14) & 3) == 2 ? "1000M" :
-+			 ((stat >> 14) & 3) == 1 ? "100M" : "10M",
++			 (stat & 0x380) == 0x200 ? "2500M" :
++			 (stat & 0x380) == 0x100 ? "1000M" :
++			 (stat & 0x380) == 0x080 ? "100M" : "10M",
 +			 (stat & BIT(13)) ? "full" : "half");
++
++		/* The analogue side, sampled alongside the digital one so the
++		 * two can be read against each other. After an unbind/rebind
++		 * the "as found" pass reports whether whatever ran in between
++		 * -- qca-ssdk's own MHT init, most obviously -- left the PLL
++		 * and LDO enables standing or cleared them again.
++		 */
++		qca8084_log_afe(bus, addr, when);
 +	}
 +}
 +
@@ -567,12 +933,23 @@ hand, and is commented as such.
 +	 * would re-pulse the line after preinit and throw away the clock,
 +	 * reset and calibration work done here.
 +	 */
-+	reset_gpio = devm_gpiod_get_optional(bus->parent, "qca8084-reset",
-+					     GPIOD_ASIS);
-+	if (IS_ERR(reset_gpio)) {
-+		dev_warn(bus->parent, "qca8084: reset gpio get failed (%ld)\n",
-+			 PTR_ERR(reset_gpio));
-+		reset_gpio = NULL;
++	{
++		struct ipq4019_mdio_data *priv = bus->priv;
++
++		if (priv->pkg_reset) {
++			reset_gpio = priv->pkg_reset;	/* re-run from the knob */
++		} else {
++			reset_gpio = devm_gpiod_get_optional(bus->parent,
++							     "qca8084-reset",
++							     GPIOD_ASIS);
++			if (IS_ERR(reset_gpio)) {
++				dev_warn(bus->parent,
++					 "qca8084: reset gpio get failed (%ld)\n",
++					 PTR_ERR(reset_gpio));
++				reset_gpio = NULL;
++			}
++			priv->pkg_reset = reset_gpio;
++		}
 +	}
 +
 +	if (reset_gpio) {
@@ -591,6 +968,11 @@ hand, and is commented as such.
 +		if (of_property_read_u32(bus->parent->of_node,
 +					 "reset-post-delay-us", &post_delay_us))
 +			post_delay_us = 50000;
++
++		if (qca8084_rst_us_override)
++			delay_us = qca8084_rst_us_override;
++		if (qca8084_post_us_override)
++			post_delay_us = qca8084_post_us_override;
 +
 +		gpiod_direction_output(reset_gpio, 1);
 +		fsleep(delay_us);
@@ -830,8 +1212,16 @@ hand, and is commented as such.
 +	qca8084_reset_pulse(bus, clk_a);
 +	qca8084_reset_pulse(bus, clk_b);
 +
-+	/* clear bit 0 across 8 registers 0x058..0x138 step 0x20 -- transcribed
-+	 * as-is from FUN_4a94c630; meaning not confirmed (isolate/bypass?).
++	/* Clear bit 0 across 8 registers 0x058..0x138 step 0x20, transcribed
++	 * from FUN_4a94c630. Now identified from qca-ssdk src/init/ssdk_mht_clk.c:
++	 * they are the CBCRs of the four GEPHY GMII TX and RX clock branches
++	 * (MHT_MAC1_GEPHY0_TX_CLK at 0x58, RX at 0x78, and so on), and bit 0 is
++	 * the branch enable. In switch mode the vendor never enables them at
++	 * init; mht_port_link_update() enables the pair for a port once its
++	 * PHY reports link, pulses their reset, and does the PHY FIFO reset.
++	 * So disabling them here matches the vendor, they are not on the path
++	 * to PHY link, and they must come on later for traffic -- which is
++	 * the ssdk's job on link-up, not this driver's.
 +	 */
 +	for (reg = 0x0c800058; reg != 0x0c800158; reg += 0x20) {
 +		u32 val;
@@ -920,8 +1310,30 @@ hand, and is commented as such.
 +	 * bits [7:5], so the trim sources were read from the wrong registers and
 +	 * the values written were meaningless. It is worth exactly one honest
 +	 * attempt now that the addressing is correct.
++	 *
++	 * 2026-09-04: the upstream QCA8084 series names the EPHY_CFG [21:20]
++	 * clear below "enable efuse loading into analog circuit". On this
++	 * silicon the hardware loads the trims itself; the vendor U-Boot skips
++	 * this software loop (efuse version 8 fails its gate) and the vendor
++	 * Linux never writes these registers. "preinit nocal" on the knob
++	 * re-runs preinit without this loop to measure the difference.
 +	 */
-+	if (!ret) {
++	/* Measured 2026-09-04 with "preinit nocal": with no software trims the
++	 * registers read 0x180[7:4] = 8/9/9/6 and 0x280[4:0] = 0x12/0x12/0x14/
++	 * 0x11, which is exactly the ssdk's ICC formula (efuse value with bit 4
++	 * inverted for efuse versions other than 1 and 2). So the hardware does
++	 * load the trims itself, the values the U-Boot transcription computes
++	 * are not what this silicon wants, and they override the hardware's.
++	 * Honour the gate, as the vendor does. "preinit cal" forces the loop
++	 * for experiments; "preinit nocal" forbids it.
++	 */
++	if (qca8084_skip_cal)
++		dev_info(bus->parent,
++			 "qca8084: software trims SKIPPED this run (nocal)\n");
++	else if (!vendor_gate && qca8084_force_cal)
++		dev_info(bus->parent,
++			 "qca8084: software trims FORCED this run (cal)\n");
++	if (!ret && !qca8084_skip_cal && (vendor_gate || qca8084_force_cal)) {
 +		for (port = 0; port < 4; port++) {
 +			const struct qca8084_calib_src *src = &qca8084_calib_srcs[port];
 +			u32 srcval, ephy_cfg_now;
@@ -959,11 +1371,27 @@ hand, and is commented as such.
 +			 "qca8084: gate condition false, calibration loop skipped (matches the vendor)\n");
 +	}
 +
-+	/* final step of FUN_4a94c630: clear bits [21:20] of EPHY_CFG, settle */
++	/* final step of FUN_4a94c630: clear bits [21:20] of EPHY_CFG, settle.
++	 * Upstream calls these QCA8084_EPHY_LDO_EN and clearing them "enable
++	 * efuse loading into analog circuit", so what 0x180/0x280 hold right
++	 * after this is what the hardware loaded (or what the software trims
++	 * above left, if they were not overwritten) -- logged for both cases.
++	 */
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
 +	if (!ret) {
 +		qca8084_reg_write32(bus, QCA8084_EPHY_CFG, ephy_cfg & 0xffcfffffu);
 +		usleep_range(11000, 12000);
++
++		for (port = 0; port < 4; port++) {
++			int phy_addr = (ephy_cfg >> (port * 5)) & 0x1f;
++			int r180 = qca8084_debug_read(bus, phy_addr, 0x180);
++			int r280 = qca8084_debug_read(bus, phy_addr, 0x280);
++
++			dev_info(bus->parent,
++				 "qca8084: phy 0x%x after EPHY_CFG[21:20] clear: debug 0x180 = 0x%04x (trim_a[7:4]) | 0x280 = 0x%04x (icc[4:0])%s\n",
++				 phy_addr, r180, r280,
++				 qca8084_skip_cal ? " [no software trims this run]" : "");
++		}
 +	}
 +
 +	ret = qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &ephy_cfg);
@@ -1092,6 +1520,17 @@ hand, and is commented as such.
 +	 * rather than a different chip.
 +	 */
 +
++	/* Last, and only now that every reset in this sequence is behind us:
++	 * read the EPHY analogue enables, then write them. Whether anything
++	 * before this point had powered them is what the read decides.
++	 */
++	qca8084_sample_ephy_link(bus, "before analogue power-on");
++	if (qca8084_afe_at_boot)
++		qca8084_analogue_power_on(bus);
++	else
++		dev_info(bus->parent,
++			 "qca8084: analogue block NOT run this pass (no qcom,qca8084-afe-power-on)\n");
++
 +	/* Autonegotiation needs seconds, not milliseconds. Sampling only once
 +	 * straight after the resets reports "link down" on every port whether
 +	 * or not a cable is in, which is worse than not sampling at all.
@@ -1122,6 +1561,275 @@ hand, and is commented as such.
 +}
 +
 +
++/* Runtime access to what preinit can reach, once the bus is registered.
++ *
++ * Every experiment on this port has cost a kernel build and a flash:
++ * CONFIG_DEVMEM is off, there is no ssdk_sh, no mdio-tools, and the
++ * unbind/rebind loop now crashes the device. This ends that. It exposes the
++ * same C22, C45, debug-register and 32-bit indirect switch-register
++ * accessors preinit uses, plus the link sampler and the bus scan, as one
++ * command file:
++ *
++ *   /sys/kernel/debug/qca8084/cmd
++ *
++ *   echo "c22 1 0x01"           > cmd    read BMSR of the PHY at address 1
++ *   echo "c22 1 0x00 0x1200"    > cmd    write BMCR, then read it back
++ *   echo "c45 1 7 0x20"         > cmd    MMD 7 register 0x20
++ *   echo "c45 1 7 0x20 0x0200"  > cmd    write it, read back
++ *   echo "dbg 1 0x380"          > cmd    debug register, via 0x1d/0x1e
++ *   echo "dbg 1 0x380 0x963c"   > cmd    write it (whole register), read back
++ *   echo "sw 0x0c8001b0"        > cmd    32-bit indirect switch register
++ *   echo "sw 0x0c8001b0 0x1"    > cmd    write it, read back
++ *   echo "sample after ifup"    > cmd    run the link sampler, label in dmesg
++ *   echo "scan"                 > cmd    PHY ID at every address
++ *   echo "preinit"              > cmd    re-run the whole preinit (7 s, holds the lock)
++ *   echo "preinit nocal"        > cmd    same, software trim loop forbidden
++ *   echo "preinit cal"          > cmd    same, software trim loop forced
++ *   echo "preinit afe"          > cmd    same, with the analogue block ("noafe" without)
++ *   echo "afe"                  > cmd    run only the analogue block (hw_init, PLL, LDO)
++ *   echo "preinit rst=200 post=100" > cmd  re-run with the package reset held 200 ms, 100 ms settle
++ *   cat cmd                              result of the last command
++ *
++ * Numbers take any base sscanf's %i does. Locking: the bus is live now, so
++ * bus->mdio_lock is held around every raw access. c22/c45 go through the
++ * locked mdiobus_* wrappers; the rest take the lock explicitly and use the
++ * raw helpers, the same shape qca-ssdk's qca_mii_read() has around
++ * priv->sw_read.
++ */
++static ssize_t qca8084_cmd_read(struct file *file, char __user *ubuf,
++				size_t len, loff_t *ppos)
++{
++	struct mii_bus *bus = file->private_data;
++	struct ipq4019_mdio_data *priv = bus->priv;
++
++	return simple_read_from_buffer(ubuf, len, ppos, priv->dbg_out,
++				       strlen(priv->dbg_out));
++}
++
++static ssize_t qca8084_cmd_write(struct file *file, const char __user *ubuf,
++				 size_t len, loff_t *ppos)
++{
++	struct mii_bus *bus = file->private_data;
++	struct ipq4019_mdio_data *priv = bus->priv;
++	char kbuf[96], op[8];
++	int a = 0, b = 0, c = 0, d = 0;
++	int n, ret;
++	u32 v32 = 0;
++
++	if (len == 0 || len >= sizeof(kbuf))
++		return -EINVAL;
++	if (copy_from_user(kbuf, ubuf, len))
++		return -EFAULT;
++	kbuf[len] = '\0';
++	strim(kbuf);
++
++	n = sscanf(kbuf, "%7s %i %i %i %i", op, &a, &b, &c, &d);
++	if (n < 1)
++		return -EINVAL;
++	n--;	/* numeric arguments actually parsed */
++
++	if (!strcmp(op, "c22") && (n == 2 || n == 3)) {
++		if (a < 0 || a > 31)
++			return -EINVAL;
++		if (n == 3) {
++			ret = mdiobus_write(bus, a, b, c);
++			if (ret < 0)
++				goto err;
++		}
++		ret = mdiobus_read(bus, a, b);
++		if (ret < 0)
++			goto err;
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "c22 phy %d reg 0x%02x = 0x%04x\n", a, b, ret);
++	} else if (!strcmp(op, "c45") && (n == 3 || n == 4)) {
++		if (a < 0 || a > 31)
++			return -EINVAL;
++		if (n == 4) {
++			ret = mdiobus_c45_write(bus, a, b, c, d);
++			if (ret < 0)
++				goto err;
++		}
++		ret = mdiobus_c45_read(bus, a, b, c);
++		if (ret < 0)
++			goto err;
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "c45 phy %d mmd %d reg 0x%04x = 0x%04x\n", a, b, c, ret);
++	} else if (!strcmp(op, "dbg") && (n == 2 || n == 3)) {
++		if (a < 0 || a > 31)
++			return -EINVAL;
++		mutex_lock(&bus->mdio_lock);
++		ret = 0;
++		if (n == 3)
++			ret = qca8084_debug_write(bus, a, b, 0xffff, c);
++		if (ret >= 0)
++			ret = qca8084_debug_read(bus, a, b);
++		mutex_unlock(&bus->mdio_lock);
++		if (ret < 0)
++			goto err;
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "dbg phy %d reg 0x%04x = 0x%04x\n", a, b, ret);
++	} else if (!strcmp(op, "sw") && (n == 1 || n == 2)) {
++		mutex_lock(&bus->mdio_lock);
++		ret = 0;
++		if (n == 2)
++			ret = qca8084_reg_write32(bus, a, b);
++		if (!ret)
++			ret = qca8084_reg_read32(bus, a, &v32);
++		mutex_unlock(&bus->mdio_lock);
++		if (ret)
++			goto err;
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "sw 0x%08x = 0x%08x\n", a, v32);
++	} else if (!strcmp(op, "sample")) {
++		const char *label = kbuf + strlen("sample");
++
++		while (*label == ' ')
++			label++;
++		if (!*label)
++			label = "on demand";
++		mutex_lock(&bus->mdio_lock);
++		qca8084_sample_ephy_link(bus, label);
++		mutex_unlock(&bus->mdio_lock);
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "sampled \"%s\", see dmesg\n", label);
++	} else if (!strcmp(op, "preinit")) {
++		const char *arg = kbuf + strlen("preinit");
++
++		while (*arg == ' ')
++			arg++;
++		if (strstr(arg, "nocal"))
++			qca8084_skip_cal = true;
++		else if (strstr(arg, "cal"))
++			qca8084_force_cal = true;
++		if (strstr(arg, "noafe"))
++			qca8084_afe_at_boot = false;
++		else if (strstr(arg, "afe"))
++			qca8084_afe_at_boot = true;
++		{
++			const char *p;
++			unsigned int ms;
++
++			/* sscanf, not kstrtouint: the value is followed by more
++			 * arguments and kstrtouint refuses trailing text
++			 */
++			p = strstr(arg, "rst=");
++			if (p && sscanf(p + 4, "%u", &ms) == 1)
++				qca8084_rst_us_override = ms * 1000;
++			p = strstr(arg, "post=");
++			if (p && sscanf(p + 5, "%u", &ms) == 1)
++				qca8084_post_us_override = ms * 1000;
++		}
++		if (qca8084_rst_us_override || qca8084_post_us_override)
++			dev_info(bus->parent,
++				 "qca8084: reset timing override: assert %u us, settle %u us\n",
++				 qca8084_rst_us_override, qca8084_post_us_override);
++		dev_info(bus->parent,
++			 "qca8084: === preinit re-run from the knob: trims %s, analogue block %s ===\n",
++			 qca8084_skip_cal ? "forbidden" :
++			 qca8084_force_cal ? "forced" : "gated",
++			 qca8084_afe_at_boot ? "ON" : "off");
++		mutex_lock(&bus->mdio_lock);
++		qca8084_preinit(bus);
++		mutex_unlock(&bus->mdio_lock);
++		/* back to the DTS choices */
++		qca8084_rst_us_override = 0;
++		qca8084_post_us_override = 0;
++		qca8084_skip_cal = false;
++		qca8084_force_cal = qca8084_trims_at_boot;
++		qca8084_afe_at_boot = of_property_read_bool(bus->parent->of_node,
++						"qcom,qca8084-afe-power-on");
++	} else if (!strcmp(op, "afe")) {
++		mutex_lock(&bus->mdio_lock);
++		qca8084_analogue_power_on(bus);
++		mutex_unlock(&bus->mdio_lock);
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "analogue block run, see dmesg\n");
++		snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++			 "preinit re-run, see dmesg\n");
++	} else if (!strcmp(op, "scan")) {
++		int addr, pos = 0;
++
++		mutex_lock(&bus->mdio_lock);
++		for (addr = 0; addr < 32; addr++) {
++			int id1 = bus->read(bus, addr, MII_PHYSID1);
++			int id2 = bus->read(bus, addr, MII_PHYSID2);
++
++			if (id1 < 0 || id1 == 0xffff)
++				continue;
++			pos += scnprintf(priv->dbg_out + pos,
++					 sizeof(priv->dbg_out) - pos,
++					 "addr %2d: 0x%04x%04x\n", addr, id1, id2);
++		}
++		mutex_unlock(&bus->mdio_lock);
++		if (!pos)
++			snprintf(priv->dbg_out, sizeof(priv->dbg_out),
++				 "no PHY answered\n");
++	} else {
++		return -EINVAL;
++	}
++
++	return len;
++
++err:
++	snprintf(priv->dbg_out, sizeof(priv->dbg_out), "%s failed: %d\n", op, ret);
++	return ret;
++}
++
++static const struct file_operations qca8084_cmd_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.read = qca8084_cmd_read,
++	.write = qca8084_cmd_write,
++	.llseek = default_llseek,
++};
++
++/* The preinit samples all end at ~9 s, before qca-ssdk (12-14.6 s) and
++ * qca-nss-dp / netifd (15-21 s) have touched anything, so the boot log has
++ * never shown the PHYs after them. This is that view, with no hands on the
++ * device: once 45 s after the bus registered and once at 90 s.
++ */
++static void qca8084_resample_work(struct work_struct *work)
++{
++	struct ipq4019_mdio_data *priv = container_of(work,
++				struct ipq4019_mdio_data, resample.work);
++	struct mii_bus *bus = priv->bus;
++	char label[32];
++
++	snprintf(label, sizeof(label), "post-ssdk +%us", priv->resample_secs);
++	mutex_lock(&bus->mdio_lock);
++	qca8084_sample_ephy_link(bus, label);
++	mutex_unlock(&bus->mdio_lock);
++
++	if (priv->resample_secs < 90) {
++		priv->resample_secs += 45;
++		schedule_delayed_work(&priv->resample, 45 * HZ);
++	}
++}
++
++static void qca8084_runtime_init(struct mii_bus *bus)
++{
++	struct ipq4019_mdio_data *priv = bus->priv;
++
++	priv->bus = bus;
++	priv->dbg_dir = debugfs_create_dir("qca8084", NULL);
++	debugfs_create_file("cmd", 0600, priv->dbg_dir, bus, &qca8084_cmd_fops);
++	snprintf(priv->dbg_out, sizeof(priv->dbg_out), "no command yet\n");
++
++	INIT_DELAYED_WORK(&priv->resample, qca8084_resample_work);
++	priv->resample_secs = 45;
++	schedule_delayed_work(&priv->resample, 45 * HZ);
++}
++
++static void qca8084_runtime_exit(struct mii_bus *bus)
++{
++	struct ipq4019_mdio_data *priv = bus->priv;
++
++	if (!priv->bus)
++		return;
++	cancel_delayed_work_sync(&priv->resample);
++	debugfs_remove_recursive(priv->dbg_dir);
++}
++
  static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
  {
  	struct ipq4019_mdio_data *priv = bus->priv;
@@ -1132,7 +1840,7 @@ hand, and is commented as such.
  				  (busy & MDIO_CMD_ACCESS_BUSY) == 0,
  				  IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT);
  }
-@@ -75,22 +1145,22 @@
+@@ -75,22 +1853,22 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1160,7 +1868,7 @@ hand, and is commented as such.
  
  	/* Wait read complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -98,13 +1168,13 @@
+@@ -98,13 +1876,13 @@
  
  	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_READ;
  
@@ -1176,7 +1884,7 @@ hand, and is commented as such.
  }
  
  static int ipq4019_mdio_read_c22(struct mii_bus *bus, int mii_id, int regnum)
-@@ -116,26 +1186,26 @@
+@@ -116,26 +1894,26 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1208,7 +1916,7 @@ hand, and is commented as such.
  }
  
  static int ipq4019_mdio_write_c45(struct mii_bus *bus, int mii_id, int mmd,
-@@ -148,30 +1218,30 @@
+@@ -148,30 +1926,30 @@
  	if (ipq4019_mdio_wait_busy(bus))
  		return -ETIMEDOUT;
  
@@ -1246,7 +1954,7 @@ hand, and is commented as such.
  
  	/* Wait write complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -191,22 +1261,22 @@
+@@ -191,22 +1969,22 @@
  		return -ETIMEDOUT;
  
  	/* Enter Clause 22 mode */
@@ -1274,7 +1982,7 @@ hand, and is commented as such.
  
  	/* Wait write complete */
  	if (ipq4019_mdio_wait_busy(bus))
-@@ -234,10 +1304,10 @@
+@@ -234,10 +2012,10 @@
  	for (div = 8; div <= 256; div *= 2) {
  		/* The requested rate is supported by the div */
  		if (priv->mdc_rate == DIV_ROUND_UP(ahb_rate, div)) {
@@ -1287,7 +1995,7 @@ hand, and is commented as such.
  
  			return 0;
  		}
-@@ -256,10 +1326,10 @@
+@@ -256,10 +2034,10 @@
  	/* To indicate CMN_PLL that ethernet_ldo has been ready if platform resource 1
  	 * is specified in the device tree.
  	 */
@@ -1301,7 +2009,7 @@ hand, and is commented as such.
  		fsleep(IPQ_PHY_SET_DELAY_US);
  	}
  
-@@ -296,7 +1366,7 @@
+@@ -296,7 +2074,7 @@
  		ahb_rate = clk_get_rate(priv->mdio_clk);
  
  	/* Check what is the current div set */
@@ -1310,7 +2018,7 @@ hand, and is commented as such.
  	div = FIELD_GET(MDIO_MODE_DIV_MASK, val);
  
  	/* div is not set to the default value of /256
-@@ -336,9 +1406,9 @@
+@@ -336,9 +2114,9 @@
  
  	priv = bus->priv;
  
@@ -1323,7 +2031,7 @@ hand, and is commented as such.
  
  	priv->mdio_clk = devm_clk_get_optional(&pdev->dev, "gcc_mdio_ahb_clk");
  	if (IS_ERR(priv->mdio_clk))
-@@ -353,9 +1423,9 @@
+@@ -353,9 +2131,9 @@
  	/* This resource is optional */
  	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
  	if (res) {
@@ -1336,7 +2044,7 @@ hand, and is commented as such.
  	}
  
  	bus->name = "ipq4019_mdio";
-@@ -364,9 +1434,42 @@
+@@ -364,9 +2142,51 @@
  	bus->read_c45 = ipq4019_mdio_read_c45;
  	bus->write_c45 = ipq4019_mdio_write_c45;
  	bus->reset = ipq_mdio_reset;
@@ -1370,6 +2078,15 @@ hand, and is commented as such.
 +	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit")) {
 +		qca8084_verbose = of_property_read_bool(pdev->dev.of_node,
 +						"qcom,qca8084-preinit-debug");
++		qca8084_trims_at_boot = of_property_read_bool(pdev->dev.of_node,
++						"qcom,qca8084-software-trims");
++		qca8084_afe_at_boot = of_property_read_bool(pdev->dev.of_node,
++						"qcom,qca8084-afe-power-on");
++		qca8084_force_cal = qca8084_trims_at_boot;
++		dev_info(&pdev->dev,
++			 "qca8084: boot choices: software trims %s, analogue block %s\n",
++			 qca8084_trims_at_boot ? "ON" : "off",
++			 qca8084_afe_at_boot ? "ON" : "off");
 +		qca8084_dbg(&pdev->dev, "qca8084: MARKER preinit call starting\n");
 +		qca8084_preinit(bus);
 +		qca8084_dbg(&pdev->dev, "qca8084: MARKER preinit call finished\n");
@@ -1379,3 +2096,21 @@ hand, and is commented as such.
  	ret = of_mdiobus_register(bus, pdev->dev.of_node);
  	if (ret) {
  		dev_err(&pdev->dev, "Cannot register MDIO bus!\n");
+@@ -375,6 +2195,9 @@
+ 
+ 	platform_set_drvdata(pdev, bus);
+ 
++	if (of_property_read_bool(pdev->dev.of_node, "qcom,qca8084-preinit"))
++		qca8084_runtime_init(bus);
++
+ 	return 0;
+ }
+ 
+@@ -382,6 +2205,7 @@
+ {
+ 	struct mii_bus *bus = platform_get_drvdata(pdev);
+ 
++	qca8084_runtime_exit(bus);
+ 	mdiobus_unregister(bus);
+ }
+ 
