@@ -42,7 +42,7 @@ hand, and is commented as such.
  
  #define MDIO_MODE_REG				0x40
  #define   MDIO_MODE_MDC_MODE			BIT(12)
-@@ -48,6 +51,126 @@
+@@ -48,6 +51,158 @@
  
  #define IPQ_PHY_SET_DELAY_US	100000
  
@@ -68,7 +68,39 @@ hand, and is commented as such.
 + */
 +#define QCA8084_PAGE_PHY	0x18
 +#define QCA8084_PAGE_REG	0x0c
-+#define QCA8084_DATA_PHY	0x10
++/* The data window is EIGHT consecutive pseudo-PHY addresses, 0x10 to 0x17,
++ * not one. The logical 32-bit address splits three ways:
++ *
++ *   bits [23:8]  the page, written to phy 0x18 reg 0x0c
++ *   bits  [7:5]  select WHICH data pseudo-PHY, 0x10 | (addr >> 5) & 7
++ *   bits  [4:2]  the 16-bit register pair within that pseudo-PHY, addr & 0x1c
++ *
++ * This driver used a constant 0x10 and therefore silently discarded bits
++ * [7:5], so every access aliased to a 32-byte window at the bottom of its
++ * page. Two independent observations on hardware forced this out:
++ *
++ *   - Dumping the fuse block 0x0c900000..0x0c900070 gave eight distinct
++ *     words repeating identically every 0x20 bytes. A 0x20 alias period is
++ *     exactly three dropped address bits.
++ *   - The write-mask probe reported MEM_CTRL at 0x0c90f044 as writable only
++ *     in bits [31:12]. 0x44 truncated to 0x04 is GLOBAL_INTR_STATUS, whose
++ *     low bits are genuinely read-only. It was never MEM_CTRL that refused
++ *     the write; the write never reached MEM_CTRL.
++ *
++ * The damage was wide. Anything at an offset of 0x20 or more inside its page
++ * went somewhere else entirely: WORK_MODE 0x0c90f030 landed on
++ * WOL_INTR_ENABLE 0x0c90f010, so the work mode was never set; the six clock
++ * branches 0x0c8001a8..0x0c8001bc landed on 0x0c800108..0x0c80011c; and the
++ * eight isolate registers 0x0c800058..0x0c800158 collapsed onto just two
++ * distinct addresses, which is precisely why their read-backs came out as
++ * six of one value and two of another.
++ *
++ * Registers that happened to sit below offset 0x20 -- EPHY_CFG 0x0c90f018,
++ * SERDES_CFG 0x0c90f014, the MDC resets at 0x0c800304 -- were correct by
++ * luck, which is why parts of the sequence demonstrably worked and made the
++ * addressing look sound.
++ */
++#define QCA8084_DATA_PHY(addr)	(0x10 | (((addr) >> 5) & 0x7))
 +#define QCA8084_EPHY_CFG	0x0c90f018u
 +/* companion register holding the next three MDIO addresses */
 +#define QCA8084_MDIO_ADDR_CFG	0x0c90f014u
@@ -135,10 +167,10 @@ hand, and is commented as such.
 +		return ret;
 +	udelay(100);
 +
-+	lo = bus->read(bus, QCA8084_DATA_PHY, addr & 0x1c);
++	lo = bus->read(bus, QCA8084_DATA_PHY(addr), addr & 0x1c);
 +	if (lo < 0)
 +		return lo;
-+	hi = bus->read(bus, QCA8084_DATA_PHY, (addr & 0x1c) + 2);
++	hi = bus->read(bus, QCA8084_DATA_PHY(addr), (addr & 0x1c) + 2);
 +	if (hi < 0)
 +		return hi;
 +
@@ -157,10 +189,10 @@ hand, and is commented as such.
 +		return ret;
 +	udelay(100);
 +
-+	ret = bus->write(bus, QCA8084_DATA_PHY, slot, val & 0xffff);
++	ret = bus->write(bus, QCA8084_DATA_PHY(addr), slot, val & 0xffff);
 +	if (ret < 0)
 +		return ret;
-+	return bus->write(bus, QCA8084_DATA_PHY, slot + 2, val >> 16);
++	return bus->write(bus, QCA8084_DATA_PHY(addr), slot + 2, val >> 16);
 +}
 +
 +/* Set bit 0 (transcribed from FUN_4a94c568; meaning inferred as
@@ -169,7 +201,7 @@ hand, and is commented as such.
  struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
-@@ -55,6 +178,720 @@
+@@ -55,6 +210,904 @@
  	unsigned int mdc_rate;
  };
  
@@ -867,6 +899,190 @@ hand, and is commented as such.
 +	else
 +		dev_warn(bus->parent, "qca8084: preinit done, EPHY_CFG unreadable\n");
 +
++	/* ---- ANOMALY PROBE 1: which bits of MEM_CTRL are writable at all ----
++	 *
++	 * MEM_CTRL is the only register on this board that has ever refused a
++	 * write: 0x0c90f044 <- 0x20 reads back 0x00000000, while 27 other
++	 * writes through the same protocol all land, including MEM_ACC_0 four
++	 * bytes further on. Rather than guessing why, find the writable mask
++	 * empirically: write all ones, read back what stuck, write all zeros,
++	 * read back, then restore. Whatever bits come back set are implemented
++	 * and writable; if none are, the register is read-only or unimplemented
++	 * in this state, and the vendor's "configure dvs before uniphy1
++	 * initialization" step simply cannot be performed here yet.
++	 *
++	 * MEM_ACC_0 is probed the same way as a control. It is known writable,
++	 * so if the probe reports it as writable and MEM_CTRL as not, the
++	 * technique is sound and the difference is real.
++	 */
++	{
++		static const struct {
++			u32 reg;
++			const char *name;
++		} probes[] = {
++			{ QCA8084_MEM_CTRL,   "MEM_CTRL"   },
++			{ QCA8084_MEM_ACC_0,  "MEM_ACC_0 (control, known writable)" },
++			{ QCA8084_MDIO_CTRL0, "MDIO_CTRL0" },
++			{ QCA8084_MDIO_CTRL1, "MDIO_CTRL1" },
++		};
++		int p;
++
++		for (p = 0; p < ARRAY_SIZE(probes); p++) {
++			u32 orig = 0, ones = 0, zeros = 0;
++
++			if (qca8084_reg_read32(bus, probes[p].reg, &orig))
++				continue;
++
++			qca8084_reg_write32(bus, probes[p].reg, 0xffffffffu);
++			qca8084_reg_read32(bus, probes[p].reg, &ones);
++			qca8084_reg_write32(bus, probes[p].reg, 0x00000000u);
++			qca8084_reg_read32(bus, probes[p].reg, &zeros);
++			qca8084_reg_write32(bus, probes[p].reg, orig);
++
++			dev_info(bus->parent,
++				 "qca8084: PROBE %s 0x%08x: orig 0x%08x, all-ones reads 0x%08x, all-zeros reads 0x%08x, writable mask 0x%08x\n",
++				 probes[p].name, probes[p].reg, orig, ones, zeros,
++				 ones & ~zeros);
++		}
++	}
++
++	/* ---- ANOMALY PROBE 2: the fuse block, in full ----
++	 *
++	 * The SKU fuse reads 0x265 masked to 20 bits, which is none of QCA8082
++	 * 0x1dc, QCA8084 0x1dd, QCA8085 0x1de or QCA8386 0x1df, and that is
++	 * confirmed at the slowest MDIO clock as well as the normal one. Either
++	 * this is a part the vendor driver does not enumerate, or the SKU is not
++	 * where qca_mht_sku_check() looks on this variant.
++	 *
++	 * Dump the whole fuse block so the layout is visible instead of inferred.
++	 * If 0x1dd or 0x1df appears at some other offset, the answer is the
++	 * second one and the register map needs adjusting for this part. Read at
++	 * the slow MDIO clock throughout, since that is what the vendor requires
++	 * for fuse rows.
++	 */
++	{
++		struct ipq4019_mdio_data *priv = bus->priv;
++		u32 saved_mode, row, off;
++
++		saved_mode = readl(priv->membase + MDIO_MODE_REG);
++		writel((saved_mode & ~MDIO_MODE_DIV_MASK) | MDIO_MODE_DIV(256),
++		       priv->membase + MDIO_MODE_REG);
++		usleep_range(1000, 2000);
++
++		for (off = 0x0c900000u; off <= 0x0c900070u; off += 4) {
++			if (qca8084_reg_read32(bus, off, &row))
++				continue;
++			dev_info(bus->parent,
++				 "qca8084: FUSE 0x%08x = 0x%08x%s\n", off, row,
++				 ((row & 0xfffff) >= 0x1dc && (row & 0xfffff) <= 0x1df)
++					? "   <-- looks like a known SKU" : "");
++		}
++
++		writel(saved_mode, priv->membase + MDIO_MODE_REG);
++		usleep_range(1000, 2000);
++	}
++
++	/* Work mode sweep.
++	 *
++	 * Every mode the vendor driver defines, tried in one boot, redoing the
++	 * parts of the bring-up the mode actually affects and rescanning the
++	 * low addresses after each. A build and flash costs an hour, so testing
++	 * one mode per cycle is the wrong shape for this question.
++	 *
++	 * The question is real and not just thoroughness. WORK_MODE reads
++	 * 0x0000000f out of reset, and 0x0f is none of the four modes the
++	 * vendor driver defines. Switch mode has been forced on the strength of
++	 * the vendor device tree calling this an ess-switch-qca8386. But the SKU
++	 * fuse reads 0x265, which is not QCA8082 0x1dc, QCA8084 0x1dd, QCA8085
++	 * 0x1de or QCA8386 0x1df, confirmed at the slowest MDIO clock as well as
++	 * the normal one. So the part identity rests on the device tree rather
++	 * than on the silicon, and in the PHY modes the four EPHYs are supposed
++	 * to be exposed directly, which is precisely the behaviour wanted here.
++	 *
++	 * The strap value is included as a candidate in its own right: if the
++	 * board straps something the driver does not name, overriding it may
++	 * itself be the mistake.
++	 */
++	{
++		static const struct {
++			u32 mode;
++			const char *name;
++		} sweep[] = {
++			{ 0x10, "MHT_SWITCH_MODE" },
++			{ 0x20, "MHT_SWITCH_BYPASS_PORT5_MODE" },
++			{ 0x27, "MHT_PHY_SGMII_UQXGMII_MODE" },
++			{ 0x2f, "MHT_PHY_UQXGMII_MODE" },
++			{ 0x0f, "strap default 0x0f" },
++		};
++		int m, addr, port, best = 0;
++		u32 v;
++
++		for (m = 0; m < ARRAY_SIZE(sweep); m++) {
++			int found = 0;
++
++			if (qca8084_reg_read32(bus, QCA8084_WORK_MODE, &v))
++				break;
++			qca8084_reg_write32(bus, QCA8084_WORK_MODE,
++					    (v & ~0x3fu) | sweep[m].mode);
++			usleep_range(2000, 3000);
++
++			/* Redo only what the mode changes the meaning of: the
++			 * EPHY addresses, the per-EPHY clocks, the MDC resets
++			 * and the final EPHY_CFG bit clear.
++			 */
++			if (!qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &v))
++				qca8084_reg_write32(bus, QCA8084_EPHY_CFG,
++						    (v & 0xfff00000u) | 0x20c41u);
++			for (port = 0; port < 4; port++)
++				qca8084_clk_enable(bus, ephy_clk[port]);
++			for (port = 0; port < 4; port++)
++				qca8084_reset_pulse(bus, ephy_clk[port]);
++			if (!qca8084_reg_read32(bus, QCA8084_EPHY_HOLD, &v))
++				qca8084_reg_write32(bus, QCA8084_EPHY_HOLD,
++						    v & 0xffffffe0u);
++			if (!qca8084_reg_read32(bus, QCA8084_EPHY_CFG, &v))
++				qca8084_reg_write32(bus, QCA8084_EPHY_CFG,
++						    v & 0xffcfffffu);
++
++			/* Give them appreciably longer than the 11 ms the
++			 * bootloader settles for. If this whole thing is a
++			 * timing problem rather than a configuration one, a
++			 * quarter of a second is where it would show.
++			 */
++			msleep(250);
++
++			for (addr = 0; addr < 8; addr++) {
++				int id1 = bus->read(bus, addr, MII_PHYSID1);
++				int id2 = bus->read(bus, addr, MII_PHYSID2);
++
++				if (id1 > 0 && id1 != 0xffff) {
++					dev_info(bus->parent,
++						 "qca8084: SWEEP %s: addr %d answers 0x%04x%04x\n",
++						 sweep[m].name, addr, id1, id2);
++					found++;
++				}
++			}
++
++			if (!qca8084_reg_read32(bus, QCA8084_WORK_MODE, &v))
++				dev_info(bus->parent,
++					 "qca8084: SWEEP %s (wrote 0x%02x, reads 0x%02x): %d responder(s) at addresses 0-7\n",
++					 sweep[m].name, sweep[m].mode,
++					 v & 0x3f, found);
++			if (found > best)
++				best = found;
++		}
++
++		/* Leave it in switch mode, which is what the vendor device tree
++		 * says this board is, unless a sweep pass found something.
++		 */
++		if (!best && !qca8084_reg_read32(bus, QCA8084_WORK_MODE, &v)) {
++			qca8084_reg_write32(bus, QCA8084_WORK_MODE,
++					    (v & ~0x3fu) | QCA8084_SWITCH_MODE);
++			dev_info(bus->parent,
++				 "qca8084: SWEEP found nothing in any mode, left in switch mode\n");
++		}
++	}
++
 +	/* Final bus map, logged unconditionally. of_mdiobus_register() only
 +	 * reports the addresses the DTS names, so this is the only way to see
 +	 * what the whole bus looks like once bring-up has finished.
@@ -890,7 +1106,7 @@ hand, and is commented as such.
  static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
  {
  	struct ipq4019_mdio_data *priv = bus->priv;
-@@ -367,6 +1204,33 @@
+@@ -367,6 +1420,33 @@
  	bus->parent = &pdev->dev;
  	snprintf(bus->id, MII_BUS_ID_SIZE, "%s%d", pdev->name, pdev->id);
  
