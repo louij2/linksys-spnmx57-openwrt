@@ -323,6 +323,155 @@ it returns before `adpt_mp_port_rxmac_status_set(A_TRUE)`. The switch's own
 port-to-port forwarding does not depend on this, so L2 traffic between front
 panel ports should work; only the CPU port is affected.
 
+## 2026-09-05: CPU-port RX -- two more theories dead, by source, before any build
+
+- **Init ordering is fine.** `regi_init()` calls `ssdk_dt_parse()` (ssdk_init.c:2454)
+  before `qca_scomphy_hw_init()` (2537) -> `qca_mp_hw_init()` ->
+  `qca_mp_portctrl_hw_init()`. `forced-speed` + `forced-duplex` on the SoC
+  ESS `port@1` (port_id 2) set `PHY_F_FORCE` via `hsl_port_force_speed_set()`
+  (ssdk_dts.c:717-720) *before* portctrl init reads it, so port 2 takes the
+  "forced" branch and has its RX MAC enabled at init (ssdk_mp.c:54). The
+  `incorrect port 0` error from the netdev notifier is therefore noise: that
+  path is not what enables RX here.
+- **No speed mismatch on the SGMII+ link.** QCA8386 `PORT_STATUS` (0x07c +
+  port*4) reads `0xfe` on port 0 = speed field 2. In
+  `include/hsl/mht/mht_port_ctrl.h`: `MHT_PORT_SPEED_2500M` is `#define`d
+  **equal to** `MHT_PORT_SPEED_1000M`. The register cannot distinguish 2.5G
+  from 1G; the rate is set by the SerDes clock. `0xfe` is exactly what 2500
+  looks like. Do not chase this again.
+
+Remaining suspects, in order: (b) the QCA8386 not forwarding to its CPU port
+(port lookup / port-VLAN membership); (c) frames not crossing the SGMII+ link;
+(d) SoC MAC1 RX; (e) EDMA/nss-dp delivery. The QCA8386's per-port MIB
+counters (readable over MDIO through the knob) split these: push frames out
+of `lan`, watch port 0 RX (SoC->switch), port 3 RX (Mac's replies arriving),
+port 0 TX (switch forwarding them back toward the SoC).
+
+### 2026-09-05: LOCALISED. Both directions are dead across the SoC<->QCA8386 SGMII+ uplink.
+
+QCA8386 per-port MIB counters (`0x1000 + port*0x100`, QCA833x layout: RX block
+at +0x00..+0x50, TX block from +0x54), read through the knob:
+
+| port | RX | TX |
+|---|---|---|
+| 0 (CPU port, faces the SoC) | **all 21 counters zero, always** -- no good byte, no bad byte, no FCS error, ever | thousands (TxBroad 3494, TxMulti 665, 443 KB in one window) |
+| 3 (Mac) | real traffic | real traffic |
+| 4 (TP-Link) | 9076 broadcasts in one window | real traffic |
+
+- **switch -> SoC:** the switch floods thousands of frames out port 0 toward the
+  SoC; `lan` `rx_packets` stays 0.
+- **SoC -> switch:** `lan` `tx_packets` went 17 -> 27 during a `ping6 ff02::1`
+  out of `lan`; port 0 RX stayed at zero.
+- Port lookups include port 0 (`0x17`, `0x0f`) and FORWARD_CTRL1 floods to all
+  ports (`0x7f7f7f`), so forwarding is not it. Both MACs read enabled.
+
+**So both MACs are up, the switch works, and nothing crosses the SGMII+ lane in
+either direction. That is a SerDes/PCS-layer fault on IPQ5018 UNIPHY1 <->
+QCA8386 SRDS1**, not MAC enable, not forwarding, not the `incorrect port 0`
+notifier (which is noise).
+
+Caveats learned reading them: the MIB counters are **clear-on-read by the
+ssdk's poll** (`fal_mib_cpukeep_set(A_FALSE)`), so values are per-window, not
+cumulative -- compare zero/non-zero, not magnitudes. The uplink SerDes is
+MDIO-addressable at 6 (SRDS1; `SERDES_CFG 0x1cc5`), with a vendor-specific
+register layout (its "BMCR" reads 0x02ff). XPCS at 7 and SRDS0 at 5 read
+all-ones and **that is expected**: the vendor asserts `MHT_UNIPHY_XPCS_RST` in
+SGMII/SGMII+ mode, and SRDS0 is the unused port-5 uplink.
+
+The SoC side (UNIPHY1 `0x98000`, ESS `0x39c00000`, GMAC `0x39d00000`) is
+memory-mapped and was invisible: no devmem, no opkg, no ethtool. Build 9 adds
+`mem <phys> [val]` to the knob (ioremap + readl/writel) to read it at runtime.
+**Do not point it at an unclocked block; that can hang the bus.**
+
+## *** 2026-09-05 00:40: CPU-RX ROOT CAUSE FOUND -- SGMII vs SGMII+ RATE MISMATCH ON THE UPLINK ***
+
+The SoC<->QCA8386 uplink has its two ends configured for different SGMII
+variants, so the serdes rates do not match and the link never establishes:
+
+| end | register | mode |
+|---|---|---|
+| QCA8386 SRDS1 (MDIO addr 6) | MMD1 0x11b = **0x0820** | SGMII+ (bit11 0x800) + MAC (0x20) -> 2.5G/3.125G |
+| SoC UNIPHY (phys 0x98000)   | MODE_CTRL 0x9846c = **0x0421** | sg_mode=1 (bit10), sgplus_mode=0 (bit11) -> plain SGMII 1G |
+
+Read live through the build-9 `mem` knob. Both ends are otherwise healthy:
+`OFFSET_CALIB_4 0x981e0 = 0xac1` (calib_done b7, pll_locked b6) on the SoC,
+`CALIB4 0x78 = 0x0ac1` on the switch. But because the rates differ:
+- SoC `CH0_IN_OUT_6 0x98488 = 0x60` -> ch0_link (bit7) = **0**
+- SoC `LINK_DETECT 0x98570 = 0`
+- switch SRDS1 `MMD26 r1 = 0` (SGMII channel status, no link)
+- traffic probe: push frames out `lan`, switch port0 RXbroad `0x1000` stays 0.
+
+This is the complete explanation for both-directions-dead. Not MAC enable,
+not forwarding, not the `incorrect port 0` notifier.
+
+**Why the SoC ended up in plain SGMII:** `_adpt_mp_port_interface_mode_set()`
+(adpt_mp_portctrl.c ~960) returns early for a **forced** port
+(`if (port_id==PORT1 || force_port) return SW_OK`) -- so it never reconfigures
+the uniphy from the port config. The SoC uniphy mode is therefore whatever the
+init path set it to, and that came out SGMII (1G), not SGMII+ (2.5G), despite
+`&switch` (SoC ESS, device 0) carrying `switch_mac_mode = MAC_MODE_SGMII_PLUS`
+and its `port@1` (port_id 2) `forced-speed = 2500`. So either nss-dp (which
+logs "PHY Link up speed: 1000" and reads the `&dp2` `fixed-link speed = 1000`)
+owns the SoC uniphy here, or the ssdk MP init maps `switch_mac_mode` to the
+wrong PORT_WRAPPER mode. Resolving which is the next step -- and it means the
+`&dp2` `fixed-link speed = <1000>` may NOT be cosmetic after all (the comment
+there claims it is).
+
+MP instance note: the SoC MAC1/port2 uplink is uniphy **instance 0** at phys
+0x98000; the MP code only ever configures INSTANCE0, and `_adpt_mp_port_..._set`
+is skipped for forced ports. All offsets used are < 0x800 so they sit in the
+ess-uniphy@98000 window.
+
+### 2026-09-05 01:15: fix target narrowed to the ssdk device-0 uniphy bring-up
+
+- **nss-dp does NOT own the uniphy PCS mode.** `ip link set lan down`/`up` left
+  SoC `MODE_CTRL 0x9846c` unchanged at `0x421` (sg_mode=1, sgplus=0). nss-dp
+  logs "PHY Link up speed: 1000" but does not touch the sg/sgplus bits. So the
+  SoC uniphy being plain SGMII is the ssdk's doing (or a reset default it never
+  overrode), not nss-dp forcing 1G from the fixed-link. The `&dp2`
+  `fixed-link speed=1000` is therefore probably cosmetic after all.
+- **The ssdk manages BOTH devices**: dmesg "Initializing SCOMPHY Done!!"
+  (device 0 = SoC MP, the MAC1 uplink path) and "Initializing MHT Done!!"
+  (device 1 = QCA8386). Device 1 came up SGMII+ correctly; device 0 did not.
+- **Enum values are NOT the bug**: `MAC_MODE_SGMII_PLUS` (dt-bindings) = 0xc =
+  `PORT_WRAPPER_SGMII_PLUS` (ssdk enum). The parse stores switch_mac_mode raw,
+  so device-0 mac_mode = 0xc = SGMII_PLUS, and `qca_mp_interface_mode_init()`
+  passes that to `adpt_mp_uniphy_mode_set(dev0, INSTANCE0, 0xc)`.
+- **But the register shows SGMII, or reset defaults**: `MODE_CTRL 0x9846c` =
+  0x421 is what `adpt_mp_uniphy_mode_ctrl_set` writes for SGMII_CHANNEL0
+  (sg_mode ENABLE), not SGMII_PLUS (which would set sgplus, ~0x821). And
+  `MISC2_PHY_MODE 0x98218` = 0x70 has phy_mode field = 7, which is neither
+  SGMII (3) nor SGMII+ (5) -- consistent with the uniphy config **never having
+  run** on instance 0 and 0x98000 holding power-on defaults.
+
+**Two possibilities remain, and they need one more careful trace (fresh, not
+at 1am):**
+1. The MP uniphy config errors or no-ops for instance 0 (e.g. `mode` retrieved
+   as something other than 0xc at the call site, or `adpt_uniphy_mode_set`
+   NULL / an early SW_NOT_SUPPORTED), leaving reset defaults.
+2. **0x98000 is the wrong uniphy for MAC1.** IPQ5018 has two uniphy instances;
+   MP `HPPE_UNIPHY_BASE1 = 0x10000`. If MAC1's uplink is instance 1
+   (phys 0x98000+0x10000 = 0xA8000), then 0x98000 is MAC0/GE's uniphy (rightly
+   SGMII) and I have been reading the wrong block. **Do NOT blind-read 0xA8000
+   with the mem knob** -- an unclocked second instance can hang the bus and the
+   box can't be power-cycled remotely until Luca is back. Confirm the instance
+   from the ipq5018 dtsi / ssdk uniphy addressing FIRST, then read.
+
+### FIX OPTIONS (for the next session, in rough order of cleanliness)
+- **A. Make the ssdk actually set the SoC uniphy to SGMII+.** Find why
+  instance-0 (or the correct instance) stays SGMII and fix the config path or
+  the DTS property it reads. This is the root fix.
+- **B. Force it via the knob after boot** to *prove* the fix before touching the
+  config: add a knob command that re-runs the MP uniphy SGMII+ set (or writes
+  MODE_CTRL sgplus + MISC2 phy_mode=5 + raw clock 312.5M + recalibrate). If
+  link then comes up and rx flows, option A is confirmed as the target.
+- **C.** If MAC1 truly needs 1G (SGMII) because 2.5G on the uplink is blocked by
+  nss-dp/swphy, that conflicts with the EPHYs needing the switch at SGMII+
+  (v0.3.0). So the uplink MUST be SGMII+ 2.5G on both ends; A/B are the path.
+
+Debug tooling on the device now (build 9, `681b2ec3...`): `/sys/kernel/debug/qca8084/cmd`
+gained `mem <phys> [val]` (ioremap+readl/writel). SoC uniphy instance 0 = phys 0x98000.
+
 ## THE CURRENT BLOCKER
 
 The four EPHYs are alive digitally and dead on the line side. Sampled 6 seconds
