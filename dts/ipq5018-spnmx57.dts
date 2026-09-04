@@ -50,7 +50,7 @@
 
 		/* [vendor] 0x0c = MAC_MODE_SGMII_PLUS on the uplink,
 		 * 0xff = MAC_MODE_DISABLED on the unused second uplink */
-		switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
+		switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
 		switch_mac_mode1 = <MAC_MODE_DISABLED>;
 
 		/* [vendor] port0 is the CPU port, ports 1-4 are LAN,
@@ -63,7 +63,7 @@
 			/* [vendor] CPU port, fixed 2.5G, no PHY */
 			port@0 {
 				port_id = <0>;
-				forced-speed = <1000>;
+				forced-speed = <2500>;
 				forced-duplex = <1>;
 			};
 
@@ -114,7 +114,7 @@
 	status = "okay";
 
 	/* [vendor] SGMII+ toward the QCA8386, not SGMII_CHANNEL0 as on the 56 */
-	switch_mac_mode = <MAC_MODE_SGMII_CHANNEL0>;
+	switch_mac_mode = <MAC_MODE_SGMII_PLUS>;
 
 	/*
 	 * The port bitmap for the SoC ESS. Without these the RX MAC is never
@@ -169,7 +169,7 @@
 		 */
 		port@1 {
 			port_id = <2>;
-			forced-speed = <1000>;
+			forced-speed = <2500>;
 			forced-duplex = <1>;
 		};
 	};
@@ -244,10 +244,6 @@
 	/* TEST BUILD ONLY: full bring-up instrumentation on. Drop this
 	 * line again before cutting another release image. */
 	qcom,qca8084-preinit-debug;
-
-	/* 2026-09-04 bisect: reproduce the preinit an EPHY was last seen linked with:
-	 * the U-Boot software trims on, the analogue block (hw_init/PLL/LDO) off. */
-	qcom,qca8084-software-trims;
 
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
