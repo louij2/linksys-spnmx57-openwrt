@@ -1,2 +1,6 @@
-# Added to target/linux/qualcommax/config-6.12 (was: # CONFIG_IPQ_CMN_PLL is not set)
+# target/linux/qualcommax/config-6.12
 CONFIG_IPQ_CMN_PLL=y
+
+# .config
+CONFIG_PACKAGE_kmod-qca-ssdk=y
+CONFIG_PACKAGE_kmod-qca-nss-dp=y
