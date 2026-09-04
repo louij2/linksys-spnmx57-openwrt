@@ -159,6 +159,31 @@
 
 	nvmem-cells = <&hw_mac_addr 0>;
 	nvmem-cell-names = "mac-address";
+
+	/*
+	 * There is no PHY on this link to connect to. MAC1 goes out over
+	 * UNIPHY1 as SGMII+ straight into the QCA8386's CPU port, so nss-dp
+	 * has to be told the link parameters rather than negotiating them:
+	 *
+	 *   nss-dp 39d00000.dp2 lan: failed to connect to phy device
+	 *   nss-dp 39d00000.dp2: probe with driver nss-dp failed with error -14
+	 *
+	 * The speed here is 1000 rather than the 2500 this link actually runs
+	 * at, and that is deliberate. of_phy_register_fixed_link() goes through
+	 * the kernel's software PHY, which only decodes 10, 100 and 1000:
+	 *
+	 *   swphy: unknown speed
+	 *   dp2: fail to register fixed-link: -22
+	 *
+	 * The real rate is not set here anyway. qca-ssdk drives it from
+	 * switch_mac_mode = MAC_MODE_SGMII_PLUS and the qca8386 port@0 entry
+	 * carrying forced-speed = <2500>, forced-duplex = <1>. This subnode
+	 * exists only to give nss-dp a link to attach to.
+	 */
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
 };
 
 /*
