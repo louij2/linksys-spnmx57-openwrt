@@ -3,6 +3,10 @@
 Getting Ethernet working on OpenWrt on the **Linksys SPNMX57** (Community
 Fibre supplied, Qualcomm **IPQ5018**, vendor codename **Palm15**).
 
+## Download
+
+**[⬇ Latest release — v0.4.0](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest)** — the first stable build: **Wi‑Fi and Ethernet both work** (the QCA8084 PHYs link at 2.5G + 1G and traffic passes to the CPU). Flash `…-factory.bin` from stock (OEM/TFTP) or `…-sysupgrade.bin` from OpenWrt, and verify against `sha256sums-v0.4.0.txt`. **Read [docs/flashing.md](docs/flashing.md) first** — the Linksys dual‑firmware recovery is deliberate; keep a UART cable handy.
+
 ## Status
 
 OpenWrt boots and Ethernet now passes traffic to the CPU: the PHYs link
@@ -10,9 +14,10 @@ OpenWrt boots and Ethernet now passes traffic to the CPU: the PHYs link
 on `lan` climbs from live traffic where it was stuck at 0 before. Finishing
 items remain before it is fully turn-key (bring `lan` up at boot via network
 config; confirm real throughput / the nss-dp cosmetic "1000" vs the 2.5G PCS).
-There is also a **usable release**
-for anyone who wants the box as a wireless repeater in the meantime: see
-[Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases).
+The **[v0.4.0 release](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest)** above is
+the recommended image. Full router mode (WAN/LAN separation) and per‑port 2.5G
+netdevs are being built on the current OpenWrt **DSA stack** (branch
+[`newstack-port`](https://github.com/louij2/linksys-spnmx57-openwrt/tree/newstack-port)) — help welcome.
 
 | | |
 |---|---|
