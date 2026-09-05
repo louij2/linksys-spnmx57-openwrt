@@ -15,11 +15,89 @@
 };
 
 /*
- * Phase 1 (new DSA stack bring-up): wifi only. Ethernet is a QCA8386
- * (Manhattan) 4x QCA8084 2.5G switch on gmac1 over SGMII+, which needs a
- * new DSA driver not yet written -- left disabled here. See
- * docs/NEWSTACK-PORT-PLAN.md. gmac0/ge_phy are unused on this board.
+ * Phase 2b PROBE-TEST (new DSA stack).
+ *
+ * Ethernet is a QCA8386 ("Manhattan") switch integrating 4x QCA8084 2.5G
+ * EPHYs, on gmac1 over SGMII+ 2.5G, driven by the new qca8386 DSA driver
+ * (drivers/net/dsa/qca/qca8386.c). This wires ONLY the switch + CPU port so
+ * the driver probes and reads chip id 0x17 over the indirect MDIO (page @
+ * phy 0x18 reg 0x0c). The four QCA8084 user ports need the nsscc +
+ * qcom,qca8084-package DT nodes (whose parent clocks currently lack an
+ * in-tree provider - see docs/phase2b-research/UNRESOLVED-CHECKLIST.md) and
+ * are deferred to Phase 2d.
+ *
+ * RUNTIME-UNVALIDATED: first bench iteration. Modelled on the working
+ * ipq5018-spnmx56.dts (qca8337 DSA on this same SoC/stack). At the bench,
+ * over UART, confirm the box boots and `dmesg | grep qca8386` shows the
+ * "detected QCA8386 (id 0x17 ...)" line. gmac0/ge_phy are unused on this
+ * board.
  */
+
+&uniphy0 {
+	status = "okay";
+
+	assigned-clocks = <&uniphy0 UNIPHY_CLK_REF>;
+	assigned-clock-rates = <UNIPHY_REFCLK_50MHZ>;
+};
+
+/* MAC1 ---SGMII+ 2.5G---> QCA8386 CPU port (port 0) */
+&gmac1 {
+	status = "okay";
+
+	phy-mode = "2500base-x";
+
+	nvmem-cells = <&hw_mac_addr 0>;
+	nvmem-cell-names = "mac-address";
+};
+
+&mdio0 {
+	status = "okay";
+};
+
+&mdio1 {
+	status = "okay";
+
+	pinctrl-0 = <&mdio1_pins>;
+	pinctrl-names = "default";
+
+	/* QCA8386 switch: register window at pseudo-PHY 0x10. */
+	switch@10 {
+		compatible = "qca,qca8386";
+		reg = <0x10>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* QCA8386 package reset (RE: tlmm gpio24, active-low). Sole
+		 * owner is this node until the nsscc node is added in phase2d.
+		 */
+		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				ethernet = <&gmac1>;
+				phy-mode = "2500base-x";
+
+				fixed-link {
+					speed = <2500>;
+					full-duplex;
+				};
+			};
+
+			/*
+			 * TODO(phase2d): user ports 1..4 -> the four QCA8084
+			 * EPHYs (phy-handle = <&ephyN>), which require the
+			 * qca8k_nsscc clock-controller and qcom,qca8084-package
+			 * nodes on this mdio1 bus. Omitted here so the probe
+			 * test does not depend on the nsscc parent-clock
+			 * providers that are not yet in-tree.
+			 */
+		};
+	};
+};
 
 &pcie0_phy {
 	status = "okay";
