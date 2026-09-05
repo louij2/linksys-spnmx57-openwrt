@@ -5,11 +5,12 @@ Fibre supplied, Qualcomm **IPQ5018**, vendor codename **Palm15**).
 
 ## Status
 
-OpenWrt boots and everything except the Ethernet **data path** works.
-The PHYs link (2.5G and 1G, negotiated and stable) and the switch forwards,
-but frames never reach the SoC: `rx_packets` on `lan` stays 0 while
-`tx_packets` climbs. **This is not yet a usable router.** See
-"Known-broken: CPU-port RX" below. There is a **usable release**
+OpenWrt boots and Ethernet now passes traffic to the CPU: the PHYs link
+(2.5G and 1G) and, with the uniphy soft-reset fix (2026-09-05), `rx_packets`
+on `lan` climbs from live traffic where it was stuck at 0 before. Finishing
+items remain before it is fully turn-key (bring `lan` up at boot via network
+config; confirm real throughput / the nss-dp cosmetic "1000" vs the 2.5G PCS).
+There is also a **usable release**
 for anyone who wants the box as a wireless repeater in the meantime: see
 [Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases).
 
@@ -23,7 +24,7 @@ for anyone who wants the box as a wireless repeater in the meantime: see
 | QCA8386 switch register access | works, reads and writes |
 | **Ethernet: PHY link** | **works** — 2.5G and 1G negotiated, stable |
 | **Ethernet: switch forwarding** | **works** — QCA8386 ports and CPU port MACs enabled |
-| **Ethernet: traffic to/from the CPU** | **does not** — `rx_packets` stays 0 |
+| **Ethernet: traffic to/from the CPU** | **works** — `rx_packets` climbs (was 0); see the uniphy soft-reset fix below |
 
 The `-22` that this repo started from is long gone. The current position is
 narrower and much better understood: the switch is fully reachable and the entire
@@ -116,7 +117,24 @@ a brick. Before the first flash, confirm whether U-Boot offers `tftpboot` plus
 flash until something works. `docs/bench-test.md` covers checking that.
 
 
-## Known-broken: CPU-port RX (help welcome)
+## FIXED 2026-09-05: CPU-port RX — the SoC↔switch SGMII uplink rate mismatch
+
+`lan` `rx_packets` was stuck at 0 while `tx_packets` climbed: nothing reached
+the SoC's MAC. **Root cause:** the SoC↔QCA8386 SGMII uplink came up at
+mismatched rates — the QCA8386 SRDS1 at SGMII+ (2.5G) but the SoC UNIPHY at
+plain SGMII (1G), so the link never carried data. On the qca-ssdk MP path,
+`adpt_mp_gcc_uniphy_port_set()` gave the forced uplink an AHB-only reset, which
+does not relatch the SerDes after `mode_ctrl` is set to SGMII+, leaving
+`MODE_CTRL` (uniphy 0x98000+0x46c) at `0x0421` (SGMII) instead of `0x0821/0x0820`
+(SGMII+). **Fix:** `package/kernel/qca-ssdk/patches/200-mp-uniphy-force-soft-reset-on-2p5g-uplink.patch`
+makes a forced 2.5G uplink take the full SYS/RX/TX soft reset (as the mainline
+uniphy PCS driver does). After the fix `MODE_CTRL` reads `0x0820` and `rx_packets`
+climbs from live front-port traffic (182→209→255→300 over 15s in the first test).
+
+Thanks to **georgem83 (OpenWrt ipq50xx maintainer)** for pointing at the uniphy
+soft-reset fix on the forum — it named the exact area.
+
+### Original symptom writeup (kept for context)
 
 `lan` shows `rx_packets = 0`, `rx_errors = 0`, while `tx_packets` climbs.
 Nothing at all arrives at the SoC's MAC, not even malformed frames.

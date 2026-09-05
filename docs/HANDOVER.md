@@ -513,6 +513,41 @@ upstream maintainer, post/ask EARLY.** A maintainer's pointer beat hours of
 solo vendor-blob reverse engineering. Same failure as "read the vendor driver
 before decompiling," one rung up. See [[feedback-ask-upstream-early]].
 
+## *** 2026-09-05 08:35: CPU-RX FIXED AND CONFIRMED ON DEVICE ***
+
+The uniphy soft-reset backport works. After flashing the qca-ssdk fix:
+- SoC UNIPHY MODE_CTRL 0x9846c: **0x0421 -> 0x0820** (plain SGMII -> SGMII+),
+  stable; CH0_IN_OUT_6 0x98488 bit7 (ch0_link) went 0 -> 1.
+- `lan` rx_packets: **0 -> climbing** (182->209->255->300 over 15s) from live
+  front-port traffic, after `ifconfig lan up`. Sustained, not a boot burst.
+- Both ends of the uplink now SGMII+ 2.5G; the rate mismatch is gone.
+
+**THE FIX:** `package/kernel/qca-ssdk/patches/200-mp-uniphy-force-soft-reset-on-2p5g-uplink.patch`
+patches `adpt_mp_gcc_uniphy_port_set()` (src/adpt/mp/adpt_mp_uniphy.c) so a
+forced port at FAL_SPEED_2500 takes UNIPHY1_SOFT_RESET_E (SYS/RX/TX) instead of
+UNIPHY1_AHB_RESET_E. The AHB-only reset did not relatch the SerDes after
+mode_ctrl was rewritten to SGMII+, so the SoC stayed SGMII while the switch was
+SGMII+. Built into image md5 9647ffc2..., module md5 d4b304ec... (verified live
+on device). NOTE: it was NOT the kernel patch George named (0723 is already
+applied and inert on the qca-ssdk stack); the defect was in the vendor MP path.
+
+Credit: georgem83 (OpenWrt ipq50xx maintainer) pointed at the uniphy soft-reset
+area on the forum, which is what turned the search to the reset path.
+
+### Finishing items before it is fully turn-key (NOT the core bug)
+1. **`lan` up at boot.** At boot nss-dp brings lan up (~15s) then down (~20s);
+   it needed a manual `ifconfig lan up` to carry traffic. This is the known
+   network-config loose end (generated bridge config lists lan1/lan2/lan3 which
+   do not exist; the iface is `lan`). Fix in board.d / the network uci.
+2. **Real throughput unknown.** nss-dp logs "PHY Link up speed: 1000" (cosmetic,
+   from the &dp2 fixed-link speed=1000) while the PCS is SGMII+ 2.5G. Run iperf
+   to see whether the datapath is actually 2.5G or GMAC-capped at 1G, and if
+   capped, whether the fixed-link/GMAC speed needs to be 2500 (the swphy 2500
+   limitation noted earlier).
+3. Codified: the fix patch and the already-applied 0723 are now in the repo.
+
+### Release: cut v0.4.0 once (1) is done so the box is turn-key. Core fix is proven.
+
 ## THE CURRENT BLOCKER
 
 The four EPHYs are alive digitally and dead on the line side. Sampled 6 seconds
