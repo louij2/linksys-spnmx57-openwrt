@@ -1,0 +1,57 @@
+/dts-v1/;
+
+#include "ipq5018.dtsi"
+#include "ipq5018-ess.dtsi"
+#include "ipq5018-mx-base.dtsi"
+
+/ {
+	model = "Linksys SPNMX57";
+	compatible = "linksys,spnmx57", "qcom,ipq5018";
+
+	chosen {
+		bootargs-append = " root=/dev/ubiblock0_0 coherent_pool=2M";
+		stdout-path = "serial0:115200n8";
+	};
+};
+
+/*
+ * Phase 1 (new DSA stack bring-up): wifi only. Ethernet is a QCA8386
+ * (Manhattan) 4x QCA8084 2.5G switch on gmac1 over SGMII+, which needs a
+ * new DSA driver not yet written -- left disabled here. See
+ * docs/NEWSTACK-PORT-PLAN.md. gmac0/ge_phy are unused on this board.
+ */
+
+&pcie0_phy {
+	status = "okay";
+};
+
+&pcie0 {
+	status = "okay";
+
+	perst-gpios = <&tlmm 15 GPIO_ACTIVE_LOW>;
+
+	pcie@0 {
+		wifi@0,0 {
+			status = "okay";
+
+			/* QCN9074: ath11k lacks DT compatible for PCI cards */
+			compatible = "pci17cb,1104";
+			reg = <0x00010000 0 0 0 0>;
+
+			qcom,ath11k-calibration-variant = "Linksys-SPNMX56";
+		};
+	};
+};
+
+&q6v5_wcss {
+	firmware-name = "ath11k/IPQ5018/hw1.0/q6_fw.mdt",
+			"ath11k/IPQ5018/hw1.0/m3_fw.mdt";
+};
+
+&wifi {
+	status = "okay";
+
+	qcom,rproc = <&q6v5_wcss>;
+	qcom,ath11k-calibration-variant = "Linksys-SPNMX56";
+	qcom,ath11k-fw-memory-mode = <1>;
+};

@@ -1,0 +1,22 @@
+diff --git a/target/linux/qualcommax/image/ipq50xx.mk b/target/linux/qualcommax/image/ipq50xx.mk
+index c62bb985c7..008a809b8a 100644
+--- a/target/linux/qualcommax/image/ipq50xx.mk
++++ b/target/linux/qualcommax/image/ipq50xx.mk
+@@ -201,6 +201,17 @@ define Device/linksys_spnmx56
+ endef
+ TARGET_DEVICES += linksys_spnmx56
+ 
++define Device/linksys_spnmx57
++	$(call Device/linksys_ipq50xx_mx_base)
++	DEVICE_MODEL := SPNMX57
++	DEVICE_DTS_CONFIG := config@mp03.1
++	DEVICE_PACKAGES := ath11k-firmware-ipq5018 \
++		kmod-ath11k-pci \
++		ath11k-firmware-qcn9074 \
++		ipq-wifi-linksys_spnmx56
++endef
++TARGET_DEVICES += linksys_spnmx57
++
+ define Device/xiaomi_ipq50xx_ax_base
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
