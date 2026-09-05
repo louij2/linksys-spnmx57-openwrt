@@ -1,0 +1,26 @@
+From: SPNMX57 port
+Subject: [PATCH] qca-ssdk: mp: soft-reset the uniphy for a forced 2.5G uplink
+
+On IPQ5018 the SoC MAC1 <-> QCA8386 uplink is a forced 2.5G SGMII+ link.
+adpt_mp_gcc_uniphy_port_set() gives every forced port an AHB-only uniphy
+reset, but AHB-only does not relatch the SerDes after mode_ctrl has been
+rewritten to SGMII+. The uniphy MODE_CTRL then stays at plain SGMII
+(0x421, 1G) instead of SGMII+ (0x821, 2.5G): the switch comes up SGMII+
+while the SoC stays SGMII, the rates mismatch, and no traffic reaches the
+CPU (rx_packets stuck at 0). Use the full SYS/RX/TX soft reset for a forced
+link at 2.5G, as the mainline uniphy PCS driver does, keeping AHB-only for
+genuinely fixed, non-rate-changing links.
+
+Signed-off-by: SPNMX57 port
+--- a/src/adpt/mp/adpt_mp_uniphy.c
++++ b/src/adpt/mp/adpt_mp_uniphy.c
+@@ -128,7 +128,8 @@
+ 		 * for fixed-link: reset AHB only
+ 		 * for phy-to-phy: do soft reset (SYS, RX, and TX)
+ 		 */
+-		if (force_port)
++		if (force_port &&
++			hsl_port_force_speed_get(dev_id, SSDK_PHYSICAL_PORT2) != FAL_SPEED_2500)
+ 			rst_type = UNIPHY1_AHB_RESET_E;
+ 		else
+ 			rst_type = UNIPHY1_SOFT_RESET_E;
