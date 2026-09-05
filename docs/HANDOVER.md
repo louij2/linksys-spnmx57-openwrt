@@ -472,6 +472,47 @@ at 1am):**
 Debug tooling on the device now (build 9, `681b2ec3...`): `/sys/kernel/debug/qca8084/cmd`
 gained `mem <phys> [val]` (ioremap+readl/writel). SoC uniphy instance 0 = phys 0x98000.
 
+## 2026-09-05: STRATEGIC STEER FROM georgem83 (= georgemoussalem, OpenWrt ipq50xx maintainer, PR #17182)
+
+He replied on the forum: (1) we build against an old branch using qca-ssdk;
+snapshot has moved to the new upstream ethernet stack; (2) the missing CMN PLL
+symbol was fixed upstream long ago; (3) the new stack has a **uniphy soft-reset
+fix** that may fix our no-CPU-traffic symptom.
+
+Verified against primary sources:
+- **CMN PLL: confirmed fixed upstream**, merged to main as `86b584bd0994`. Our
+  patch 0069 is redundant on current main (keep it only while on this tree).
+- **New stack = kernel 6.18, stmmac / `dwmac-ipq5018` + `qca8k` DSA**, no
+  qca-ssdk / nss-dp. Ref: OpenWrt forum "IPQ5018: NSS offload on kernel 6.18
+  with the upstream ethernet stack (GL-B3000)". The SoC uniphy0 PCS bring-up
+  (2.5G HSGMII) lives in this stack -- exactly the layer we found broken.
+- **BUT the new stack has NO QCA8386 support** -- it is tested on QCA8337 /
+  QCA8081 only. The Atlas 6 (MX2000/MX5500) and the already-supported SPNMX56
+  (commit fe379eb1c1) are **QCA8337**, not QCA8386. Our QCA8386 (4xQCA8084
+  "Manhattan"/MHT) is unsupported on any branch except this repo; our own
+  forum thread is the top hit for "qca8386 ipq5018". So rebasing is NOT a free
+  fix: we would still have to port the QCA8386.
+
+**The uniphy soft-reset fix is the actionable prize, and it maps onto the
+confirmed root cause** (SoC UNIPHY stuck in SGMII while the switch is SGMII+).
+Two paths:
+- **(A) Backport / adapt the uniphy soft-reset onto this tree.** Fastest route
+  to working ethernet. Find the commit (asked George), understand its register
+  sequence, apply it to bring UNIPHY1 up in SGMII+ (via preinit or the SoC
+  ess-switch config). Attacks the root cause directly without a rewrite.
+- **(B) Rebase onto current OpenWrt main (new stack) as the long-term base.**
+  Better foundation (maintained, mainline-track, CMN PLL already in, uniphy fix
+  already in, SPNMX56 present as a DTS template), but requires re-porting the
+  QCA8386 to the new stack and dropping the qca-ssdk approach. Bigger job.
+
+Recommendation: pursue (A) first for a working box; treat (B) as the eventual
+upstreamable form. Await George's commit pointer either way.
+
+**META-LESSON (Luca's point, "you always do this"): on a project with a live
+upstream maintainer, post/ask EARLY.** A maintainer's pointer beat hours of
+solo vendor-blob reverse engineering. Same failure as "read the vendor driver
+before decompiling," one rung up. See [[feedback-ask-upstream-early]].
+
 ## THE CURRENT BLOCKER
 
 The four EPHYs are alive digitally and dead on the line side. Sampled 6 seconds
