@@ -48,6 +48,12 @@
 
 	nvmem-cells = <&hw_mac_addr 0>;
 	nvmem-cell-names = "mac-address";
+
+	fixed-link {
+		speed = <2500>;
+		full-duplex;
+		pause;
+	};
 };
 
 &mdio0 {
