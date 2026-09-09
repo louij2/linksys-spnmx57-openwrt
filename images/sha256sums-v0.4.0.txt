@@ -1,0 +1,2 @@
+6c951301ad56cf9382bac67025d4e56042dce6903d36ba36eb9ca81418c41c45  openwrt-qualcommax-ipq50xx-linksys_spnmx57-squashfs-sysupgrade.bin
+208f4aebe069299fb686baa12e48af9c934013822a246db53e7f8465465d2fa7  openwrt-qualcommax-ipq50xx-linksys_spnmx57-squashfs-factory.bin
