@@ -1,0 +1,30 @@
+#!/bin/sh
+# Performance defaults for the SPNMX57.
+#
+# This SoC has NO NSS offload on the mainline DSA stack, so every routed or
+# wireless packet is handled by the dual Cortex-A53. Wired-to-wired is
+# hardware-switched and unaffected.
+#
+# Measured during development, iPhone over WiFi 6 with the device doing NAT on a
+# 1G uplink: 164 -> 257 Mbit/s down from flow offloading alone, and 485 with
+# packet steering on top. IRQ 22 (eth0) showed 1,357,683 interrupts on cpu0 and
+# zero on cpu1 - the conduit is single-queue, so without steering one core does
+# every packet.
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,spnmx57" ] || exit 0
+
+# 1. Software flow offloading. Shortcuts established connections past the full
+#    netfilter path. flow_offloading_hw is deliberately NOT set - it needs NSS.
+#    TRADE-OFF: incompatible with SQM/QoS shaping. To prefer bufferbloat control:
+#      uci set firewall.@defaults[0].flow_offloading='0'; uci commit firewall
+uci -q set firewall.@defaults[0].flow_offloading='1'
+uci -q commit firewall
+
+# 2. Packet steering (RPS). Use OpenWrt's own implementation
+#    (/etc/init.d/packet_steering -> /usr/libexec/network/packet-steering.uc),
+#    which is a load-balancing scheduler and re-runs on interface events. Do NOT
+#    hand-roll rps_cpus writes: that service will overwrite them.
+uci -q get network.globals >/dev/null 2>&1 || uci -q set network.globals=globals
+uci -q set network.globals.packet_steering='1'
+uci -q commit network
+
+exit 0
