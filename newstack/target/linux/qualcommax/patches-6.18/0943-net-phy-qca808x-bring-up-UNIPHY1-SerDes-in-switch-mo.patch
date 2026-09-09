@@ -32,10 +32,14 @@
  #define QP_USXG_OPTION1				0x180
  #define QP_USXG_OPTION1_DATAPASS		BIT(0)
  #define QP_USXG_OPTION1_DATAPASS_SGMII		0
-@@ -617,6 +624,90 @@
+@@ -617,6 +624,94 @@
  	return 0;
  }
  
++/* Defined further down; needed by qca8084_sgmii_set_mode() below. */
++static int qca8084_pcs_ipg_tune_reset(struct mdio_device *mdio_dev,
++				      int reset_function);
++
 +/* Bring up PCS1 (UNIPHY1) for SGMII/SGMII+ towards the switch MAC.
 + *
 + * Previously only qca8084_qxgmii_set_mode() ever touched UNIPHY1, and it is
