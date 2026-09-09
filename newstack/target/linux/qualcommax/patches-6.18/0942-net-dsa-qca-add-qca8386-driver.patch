@@ -1,0 +1,22 @@
+--- a/drivers/net/dsa/qca/Kconfig
++++ b/drivers/net/dsa/qca/Kconfig
+@@ -24,3 +24,12 @@
+ 	help
+ 	  This enabled support for LEDs present on the Qualcomm Atheros
+ 	  QCA8K Ethernet switch chips.
++
++config NET_DSA_QCA8386
++	tristate "Qualcomm QCA8386 (Manhattan) Ethernet switch support"
++	depends on NET_DSA
++	select NET_DSA_TAG_QCA
++	select REGMAP
++	help
++	  This enables support for the Qualcomm QCA8386 ("Manhattan"/MHT)
++	  Ethernet switch, as found on the Linksys SPNMX57 (IPQ5018).
+--- a/drivers/net/dsa/qca/Makefile
++++ b/drivers/net/dsa/qca/Makefile
+@@ -5,3 +5,4 @@
+ ifdef CONFIG_NET_DSA_QCA8K_LEDS_SUPPORT
+ qca8k-y				+= qca8k-leds.o
+ endif
++obj-$(CONFIG_NET_DSA_QCA8386)	+= qca8386.o

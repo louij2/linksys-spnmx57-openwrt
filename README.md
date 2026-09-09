@@ -1,183 +1,111 @@
-# linksys-spnmx57-openwrt
+# OpenWrt for the Linksys SPNMX57 (IPQ5018 / QCA8386 / QCA8084)
 
-Getting Ethernet working on OpenWrt on the **Linksys SPNMX57** (Community
-Fibre supplied, Qualcomm **IPQ5018**, vendor codename **Palm15**).
+Unofficial OpenWrt support for the **Linksys SPNMX57**, the 2.5 GbE Velop-style
+node several UK ISPs ship as a range extender.
 
-## Download
+The stock ISP firmware **will not do bridge or AP mode at all**, which is what
+started this. On OpenWrt it does — plus per-port netdevs, real router mode, and
+2.5 Gbps on the front ports.
 
-**[⬇ Latest release — v0.4.0](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest)** — the first stable build: **Wi‑Fi and Ethernet both work** (the QCA8084 PHYs link at 2.5G + 1G and traffic passes to the CPU). Flash `…-factory.bin` from stock (OEM/TFTP) or `…-sysupgrade.bin` from OpenWrt, and verify against `sha256sums-v0.4.0.txt`. **Read [docs/flashing.md](docs/flashing.md) first** — the Linksys dual‑firmware recovery is deliberate; keep a UART cable handy.
+> [!IMPORTANT]
+> This is a personal port, not an official OpenWrt target. It has been proven on
+> **one unit**. Read [docs/flashing.md](docs/flashing.md) before you flash
+> anything, and have a UART cable to hand.
 
-## Status
+## What works
 
-OpenWrt boots and Ethernet now passes traffic to the CPU: the PHYs link
-(2.5G and 1G) and, with the uniphy soft-reset fix (2026-09-05), `rx_packets`
-on `lan` climbs from live traffic where it was stuck at 0 before. Finishing
-items remain before it is fully turn-key (bring `lan` up at boot via network
-config; confirm real throughput / the nss-dp cosmetic "1000" vs the 2.5G PCS).
-The **[v0.4.0 release](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest)** above is
-the recommended image. Full router mode (WAN/LAN separation) and per‑port 2.5G
-netdevs are being built on the current OpenWrt **DSA stack** (branch
-[`newstack-port`](https://github.com/louij2/linksys-spnmx57-openwrt/tree/newstack-port)) — help welcome.
+Verified on hardware, running from NAND on kernel 6.18.44:
 
-| | |
+| | status |
 |---|---|
-| Kernel boot, UBI + overlay | works |
-| Wi-Fi (QCN9074, ath11k) | works, all three interfaces at once |
-| PCIe | works |
-| LEDs, buttons, serial, SSH | works |
-| sysupgrade + self-recovery | works |
-| QCA8386 switch register access | works, reads and writes |
-| **Ethernet: PHY link** | **works** — 2.5G and 1G negotiated, stable |
-| **Ethernet: switch forwarding** | **works** — QCA8386 ports and CPU port MACs enabled |
-| **Ethernet: traffic to/from the CPU** | **works** — `rx_packets` climbs (was 0); see the uniphy soft-reset fix below |
+| `lan1` `lan2` `lan3` `wan` as separate netdevs | ✅ DSA, hardware bridged |
+| 2.5 Gbps on the front ports | ✅ links and forwards |
+| Router mode (NAT, DHCP, WAN) | ✅ end to end |
+| Wi-Fi 6 — 2.4 GHz (IPQ5018) + 5 GHz (QCN9074) | ✅ both radios, clients associate |
+| Dumb AP / bridge mode | ✅ the thing stock firmware refuses to do |
+| `sysupgrade`, config persistence, reboot survival | ✅ |
 
-The `-22` that this repo started from is long gone. The current position is
-narrower and much better understood: the switch is fully reachable and the entire
-vendor bring-up sequence has been reverse engineered and now runs correctly, with
-all 27 of its register writes read back and verified on hardware. What has not
-happened is the four QCA8084 EPHYs answering Clause 22 MDIO at addresses 1-4.
+Measured, iPhone over Wi-Fi 6 (HE80 2×2) with the device doing NAT on a 1 G
+uplink: **485 Mbit/s down / 474 up**. See
+[Performance](#performance) — two settings account for a 3× difference and are
+now enabled by default.
 
-**The blocker that hid all of this was a chip held in reset.** Every register read
-returned `0xffffffff` for three builds. `__mdiobus_register()` is what claims a
-bus's reset GPIO and pulses it, so bring-up code that runs before registration
-inherits that job -- and here the line (tlmm gpio24, `GPIO_ACTIVE_LOW`) was still
-unclaimed with a pull-down, holding the QCA8386 in hardware reset for the whole
-sequence. See [docs/HANDOVER.md](docs/HANDOVER.md) for the full current state, and
-[docs/investigation.md](docs/investigation.md) for the original `-22` analysis.
+## What does not work, or is untested
 
-## What is known, and how
+Be aware of these before you rely on it:
 
-The vendor's own device tree has been extracted from the stock OEM firmware,
-which is a public download and is itself a u-boot FIT image. No case was
-opened and nothing was reflashed. It lives in
-[collected/vendor/](collected/vendor/), with provenance and an md5.
+- **No NSS offload.** Wi-Fi and routed traffic cross the CPU (dual Cortex-A53).
+  Wired-to-wired *is* hardware-switched and does not. NAT throughput will not
+  reach 2.5 Gbps.
+- **Wired-to-wired switching throughput is unmeasured.** It needs two 2.5 G
+  hosts; the path is verified correct at the register level but has no number.
+- **One unit, one person.** No second unit has ever run this build.
+- Two cosmetic `rcg didn't update its configuration` warnings at boot (`mac0`,
+  before the SerDes is up). Harmless; it settles on the correct rate.
+- LEDs, buttons and per-port LED offload are not wired up.
 
-That gives the real hardware, written up in
-[docs/hardware.md](docs/hardware.md):
+## Install
 
-```
-IPQ5018 MAC1 --UNIPHY1-- SGMII+ 2.5G forced --> QCA8386 switch
-                                                  port0 = CPU
-                                                  port1..4 = QCA8084 EPHYs
-                                                             at MDIO addr 1,2,3,4
-```
+Images are on the [Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases)
+page. **Read [docs/flashing.md](docs/flashing.md) first** — it covers the dual
+firmware partitions, the recovery path, and the UART pinout.
 
-Not what was previously assumed. There is no PHY at address `0x1c` and none at
-`00`; that was the SPNMX56's layout. There is exactly **one** SoC MAC in use,
-and the four sockets are switch ports behind it.
+- Coming from **OpenWrt** → `...-squashfs-sysupgrade.bin` via `sysupgrade`
+- Coming from **stock** → `...-squashfs-factory.bin`. This path is
+  **not yet proven on this device**; do not attempt it without a UART attached.
 
-## The two bugs behind the -22
+Always verify against the `sha256sums` file on the release.
 
-1. **No PHY package in the device tree.** The QCA8084 is a package with shared
-   clocks, a shared reset and its own clock controller. The current DTS
-   declares bare `ethernet-phy` stubs, so `of_phy_package_join()` returns
-   `-EINVAL` per address and the driver never touches the hardware
-2. **Clock parent liveness.** The APB bridge RCG can only make 312.5 MHz from
-   `UNIPHY1_TX312P5M`. If that PLL is not already running, `clk_set_rate()`
-   itself returns `-EINVAL`. Same error code, different cause
+## Performance
 
-Analysis credit: **Hyndland** on the OpenWrt forum, from the vendor GPL
-`qca-ssdk` sources. The vendor device tree corroborates it at every point.
+Two settings, both now shipped enabled, that together nearly tripled download
+throughput on the Wi-Fi path:
 
-## The load bearing unknown
+1. **Software flow offloading** (`/etc/config/firewall`). Hardware offload needs
+   NSS and is unavailable. Note it is incompatible with SQM/QoS shaping.
+2. **RPS packet steering** (`/etc/hotplug.d/net/20-packet-steering`). The conduit
+   is single-queue, so without it one core handled every packet while the other
+   idled — `IRQ 22` showed 1.36 M interrupts on cpu0 and **zero** on cpu1.
+   The uci option `network.globals.packet_steering` does **nothing** on this
+   build (netifd contains no `rps_cpus` code at all), hence the hotplug script.
 
-**Mainline has no driver for the QCA8386 switch.** `qca8k` covers the QCA8327
-and QCA8337, not this. So the realistic best outcome is one Ethernet interface
-with the four sockets behind it acting as a dumb switch, and that only holds if
-the QCA8386 comes out of reset forwarding. Nobody has checked.
+| config | down | up |
+|---|---|---|
+| stock defaults | 164 | 385 |
+| + flow offloading | 257 | 444 |
+| + RPS | **485** | **474** |
 
-One boot on a serial connected unit settles it, and we have one.
+## How it was done
 
-## Next step
+The interesting part is the Ethernet. The QCA8386 switch had no DSA driver
+anywhere — not in OpenWrt, not in mainline — so one was written, forked from
+`qca8k`. Full write-up in [docs/CONTINUE-HERE.md](docs/CONTINUE-HERE.md).
 
-[docs/bench-test.md](docs/bench-test.md) — a single MDIO read over serial that
-decides whether the device tree work is sufficient or whether the driver needs
-reordering too. It needs no build.
+The bug that cost the most: the driver inherited the **QCA8337's 32-bit MDIO
+register decode**. The QCA8386 is addressed like the rest of the QCA8084
+package — upper 16 bits at `reg | BIT(1)`, not `reg + 1`. Offset 0 decodes
+identically under both schemes, so the chip ID read back perfectly while every
+other register read 0 and every write was silently destroyed. Two plausible
+theories (switch core held in reset; missing switch-core memory config) were
+built and hardware-tested before the real cause was found by dumping a register
+range and noticing every value was one 16-bit word duplicated into both halves.
 
-Then [dts/ipq5018-spnmx57.dts](dts/ipq5018-spnmx57.dts), a candidate that has
-never been booted, with every inference marked `[GUESS]` inline.
+## Credits
 
-## Layout
+- **Hyndland** on the OpenWrt forum for the original `-22` analysis from the
+  vendor GPL drop.
+- **George Moussalem**, OpenWrt ipq50xx maintainer, who pointed at the uniphy
+  soft-reset area — that named the exact problem.
+- Qualcomm's `qca-ssdk` as the reference for the QCA8386 bring-up sequence.
+- Mainline `qca8k` (John Crispin and others), which this driver is forked from.
 
-| path | what |
-|---|---|
-| `collected/vendor/` | vendor DTB and DTS from the stock image, with provenance |
-| `dts/ipq5018-spnmx56.dts` | the SPNMX56, for comparison. Do not treat as a base |
-| `dts/ipq5018-spnmx57.dts` | candidate. **Never booted** |
-| `docs/hardware.md` | what the board is, from the vendor tree |
-| `docs/investigation.md` | the root cause, and what is still unknown |
-| `docs/bench-test.md` | the one test to run next |
-| `scripts/collect.sh` | read only ground truth dump from a running unit |
+## Discussion
 
-## Upstream
+- [OpenWrt Support for Linksys SPNMX57 variants](https://forum.openwrt.org/t/openwrt-support-for-linksys-spnmx57-variants/231653)
+- [SPNMX57 / IPQ5018 / QCA8084 — `-22` root-caused (clock-parent liveness)](https://forum.openwrt.org/t/linksys-spnmx57-ipq5018-qca8084-22-root-caused-clock-parent-liveness-need-a-serial-confirm/252827)
 
-- Thread: [OpenWrt Support for Linksys SPNMX57 variants](https://forum.openwrt.org/t/openwrt-support-for-linksys-spnmx57-variants/231653)
-- Root cause post: [-22 root-caused (clock-parent liveness)](https://forum.openwrt.org/t/linksys-spnmx57-ipq5018-qca8084-22-root-caused-clock-parent-liveness-need-a-serial-confirm/252827)
+## Licence
 
-## Recovery
-
-UART is what makes this practical: a bad DTS becomes a log to read rather than
-a brick. Before the first flash, confirm whether U-Boot offers `tftpboot` plus
-`bootm`, so candidates can be booted from RAM and nothing needs writing to
-flash until something works. `docs/bench-test.md` covers checking that.
-
-
-## FIXED 2026-09-05: CPU-port RX — the SoC↔switch SGMII uplink rate mismatch
-
-`lan` `rx_packets` was stuck at 0 while `tx_packets` climbed: nothing reached
-the SoC's MAC. **Root cause:** the SoC↔QCA8386 SGMII uplink came up at
-mismatched rates — the QCA8386 SRDS1 at SGMII+ (2.5G) but the SoC UNIPHY at
-plain SGMII (1G), so the link never carried data. On the qca-ssdk MP path,
-`adpt_mp_gcc_uniphy_port_set()` gave the forced uplink an AHB-only reset, which
-does not relatch the SerDes after `mode_ctrl` is set to SGMII+, leaving
-`MODE_CTRL` (uniphy 0x98000+0x46c) at `0x0421` (SGMII) instead of `0x0821/0x0820`
-(SGMII+). **Fix:** `package/kernel/qca-ssdk/patches/200-mp-uniphy-force-soft-reset-on-2p5g-uplink.patch`
-makes a forced 2.5G uplink take the full SYS/RX/TX soft reset (as the mainline
-uniphy PCS driver does). After the fix `MODE_CTRL` reads `0x0820` and `rx_packets`
-climbs from live front-port traffic (182→209→255→300 over 15s in the first test).
-
-Thanks to **georgem83 (OpenWrt ipq50xx maintainer)** for pointing at the uniphy
-soft-reset fix on the forum — it named the exact area.
-
-### Original symptom writeup (kept for context)
-
-`lan` shows `rx_packets = 0`, `rx_errors = 0`, while `tx_packets` climbs.
-Nothing at all arrives at the SoC's MAC, not even malformed frames.
-
-What is already ruled out, with evidence:
-
-- **The PHYs.** All four QCA8084 EPHYs link and negotiate correctly
-  (2500M full on one port, 1000M full on another), with valid autoneg
-  codewords, stable across minutes.
-- **The QCA8386 switch.** Its `PORT_STATUS` registers (`0x07c + port*4`) show
-  TXMAC and RXMAC enabled on the linked ports *and on port 0*, the CPU port
-  facing the SoC. It is forwarding.
-- **A speed mismatch on the SGMII uplink.** The `fixed-link speed = <1000>`
-  under `&dp2` is cosmetic; qca-ssdk drives the real rate from
-  `switch_mac_mode` and the `port@0` `forced-speed`. It is identical in the
-  last-known-good commit.
-
-The remaining suspect is the SoC ESS RX MAC for port 2 (MAC1). qca-ssdk's
-`adpt_mp_port_netdev_change_notify()` logs
-
-```
-adpt_mp_port_netdev_change_notify: netdev change notify with incorrect port 0
-ssdk_dev_event: netdev change notify failed
-```
-
-and returns before `adpt_mp_port_rxmac_status_set(A_TRUE)`. The port id comes
-from `qca_ssdk_phydev_to_port(dev_id, dev->phydev)`, and `dev->phydev` is the
-fixed-link software PHY on `&dp2`. Port 2 is a MAC-only forced port with no
-`phy_address`, so there is no phydev in the ssdk's tables to match and the
-lookup structurally returns 0.
-
-Note that simply adding `ESS_PORT0` to the port bitmap to get past the check
-is **not** a fix: three lines later the function indexes
-`priv->port_old_link[port_id - 1]`, which for `port_id = 0` is index -1.
-
-`qca_mp_portctrl_hw_init()` (`src/init/ssdk_mp.c`) enables the RX MAC at init
-for ports with `PHY_F_FORCE`, which `forced-speed` in the DTS should set for
-port 2 — so why that does not take effect is the open question.
-
-These registers are memory-mapped at `0x39c00000` and not reachable over MDIO,
-so unlike the PHY side this cannot be poked at runtime; it needs a build.
+GPL-2.0, matching OpenWrt and the Linux kernel. See [LICENSE](LICENSE).
+This repository contains work derived from OpenWrt, the Linux kernel, and
+Qualcomm's `qca-ssdk`; those retain their own copyrights and licences.
