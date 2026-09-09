@@ -40,6 +40,8 @@
 #include <linux/mdio.h>
 #include <linux/phylink.h>
 #include <linux/gpio/consumer.h>
+#include <linux/clk.h>
+#include <linux/reset.h>
 #include <linux/delay.h>
 #include <linux/if_bridge.h>
 #include <linux/debugfs.h>
@@ -124,12 +126,51 @@ struct qca8386_info {
 	const char *name;
 };
 
+/* The switch core plus MAC0..MAC5 TX/RX, in the order the vendor SSDK pulses
+ * them in qca_mht_switch_reset().
+ */
+#define QCA8386_NUM_RESETS	13
+
+static const char * const qca8386_reset_names[QCA8386_NUM_RESETS] = {
+	"switch_core",
+	"mac0_tx", "mac0_rx",
+	"mac1_tx", "mac1_rx",
+	"mac2_tx", "mac2_rx",
+	"mac3_tx", "mac3_rx",
+	"mac4_tx", "mac4_rx",
+	"mac5_tx", "mac5_rx",
+};
+
+/* Four datapath clocks per port, in DT order: tx, rx, then the two that feed
+ * the port's line side (SerDes on the CPU port, internal GEPHY on the user
+ * ports). Port N's tx clock is index N * QCA8386_CLKS_PER_PORT.
+ */
+#define QCA8386_CLKS_PER_PORT	4
+#define QCA8386_NUM_CLKS	(QCA8386_NUM_PORTS * QCA8386_CLKS_PER_PORT)
+
+static const char * const qca8386_clk_names[QCA8386_NUM_CLKS] = {
+	"mac0_tx", "mac0_rx", "mac0_tx_srds1", "mac0_rx_srds1",
+	"mac1_tx", "mac1_rx", "mac1_gephy_tx", "mac1_gephy_rx",
+	"mac2_tx", "mac2_rx", "mac2_gephy_tx", "mac2_gephy_rx",
+	"mac3_tx", "mac3_rx", "mac3_gephy_tx", "mac3_gephy_rx",
+	"mac4_tx", "mac4_rx", "mac4_gephy_tx", "mac4_gephy_rx",
+};
+
+/* Datapath clock rates, from the vendor's UQXGMII_SPEED_*_CLK defines. */
+#define QCA8386_CLK_RATE_2500M	312500000UL
+#define QCA8386_CLK_RATE_1000M	125000000UL
+#define QCA8386_CLK_RATE_100M	25000000UL
+#define QCA8386_CLK_RATE_10M	2500000UL
+
 struct qca8386_priv {
 	struct device *dev;
 	struct mii_bus *bus;
 	struct regmap *regmap;
 	struct dsa_switch *ds;
 	const struct qca8386_info *info;
+
+	struct reset_control_bulk_data resets[QCA8386_NUM_RESETS];
+	struct clk_bulk_data clks[QCA8386_NUM_CLKS];
 
 	struct mutex reg_mutex;
 	struct dentry *debugfs;
@@ -471,6 +512,47 @@ static int qca8386_read_switch_id(struct qca8386_priv *priv)
 	return 0;
 }
 
+/* Retime a port's MAC datapath clocks for the negotiated link speed. The
+ * vendor does this in mht_port_speed_clock_set() on every link change; the
+ * RCGs pick their own parent from the requested rate, so we only ever set a
+ * rate and never a parent.
+ */
+static void qca8386_port_clk_rate_set(struct qca8386_priv *priv, int port,
+				      int speed)
+{
+	int idx = port * QCA8386_CLKS_PER_PORT;
+	unsigned long rate;
+	int ret;
+
+	switch (speed) {
+	case SPEED_2500:
+		rate = QCA8386_CLK_RATE_2500M;
+		break;
+	case SPEED_1000:
+		rate = QCA8386_CLK_RATE_1000M;
+		break;
+	case SPEED_100:
+		rate = QCA8386_CLK_RATE_100M;
+		break;
+	case SPEED_10:
+		rate = QCA8386_CLK_RATE_10M;
+		break;
+	default:
+		return;
+	}
+
+	/* tx then rx - the DT order the clk_names table encodes. */
+	ret = clk_set_rate(priv->clks[idx].clk, rate);
+	if (ret)
+		dev_warn(priv->dev, "port %d: tx clock -> %lu Hz failed: %d\n",
+			 port, rate, ret);
+
+	ret = clk_set_rate(priv->clks[idx + 1].clk, rate);
+	if (ret)
+		dev_warn(priv->dev, "port %d: rx clock -> %lu Hz failed: %d\n",
+			 port, rate, ret);
+}
+
 static void qca8386_port_set_status(struct qca8386_priv *priv, int port, int enable)
 {
 	u32 mask = QCA8386_PORT_STATUS_TXMAC | QCA8386_PORT_STATUS_RXMAC;
@@ -567,7 +649,35 @@ static int qca8386_setup(struct dsa_switch *ds)
 {
 	struct qca8386_priv *priv = ds->priv;
 	struct dsa_port *dp;
+	u32 val;
 	int ret;
+
+	/* Everything below this point is a write into the switch core, and the
+	 * core is still held in reset at this stage: its registers read back 0
+	 * and writes are silently dropped (the MDIO window itself works - the
+	 * chip ID register reads correctly). The vendor SSDK pulses the switch
+	 * core and every MAC reset in qca_mht_switch_reset(), immediately after
+	 * the SerDes/interface-mode init and immediately before
+	 * qca_switch_init(). Same sequence, same place.
+	 */
+	ret = reset_control_bulk_reset(QCA8386_NUM_RESETS, priv->resets);
+	if (ret) {
+		dev_err(priv->dev, "failed to reset switch core: %d\n", ret);
+		return ret;
+	}
+
+	/* The core needs a moment before it answers on the register bus. */
+	usleep_range(1000, 2000);
+
+	/* Ungate the datapath. Nothing else in the tree consumes these, so
+	 * without this clk_disable_unused() switches them off again shortly
+	 * after boot and no frame ever moves.
+	 */
+	ret = clk_bulk_prepare_enable(QCA8386_NUM_CLKS, priv->clks);
+	if (ret) {
+		dev_err(priv->dev, "failed to enable port clocks: %d\n", ret);
+		return ret;
+	}
 
 	/* Enable the CPU port. */
 	ret = qca8386_rmw(priv, QCA8386_REG_GLOBAL_FW_CTRL0,
@@ -636,8 +746,21 @@ static int qca8386_setup(struct dsa_switch *ds)
 			return ret;
 	}
 
-	dev_info(priv->dev, "qca8386 setup complete (CPU port + %d user ports)\n",
-		 QCA8386_NUM_PORTS - 1);
+	/* Read one of the registers we just wrote straight back. Before the
+	 * switch-core reset this read returned 0 no matter what we wrote, so it
+	 * is the cheapest proof in dmesg that the core is actually alive.
+	 */
+	ret = qca8386_read(priv, QCA8386_REG_GLOBAL_FW_CTRL0, &val);
+	if (ret)
+		return ret;
+
+	dev_info(priv->dev,
+		 "qca8386 setup complete (CPU port + %d user ports), FW_CTRL0=0x%08x\n",
+		 QCA8386_NUM_PORTS - 1, val);
+
+	if (!val)
+		dev_warn(priv->dev,
+			 "switch core still reads back zero - core may be held in reset\n");
 
 	return 0;
 }
@@ -696,6 +819,9 @@ qca8386_phylink_mac_link_up(struct phylink_config *config,
 	struct qca8386_priv *priv = dp->ds->priv;
 	int port = dp->index;
 	u32 reg;
+
+	/* Retime the datapath before the MAC is allowed to pass traffic. */
+	qca8386_port_clk_rate_set(priv, port, speed);
 
 	if (phylink_autoneg_inband(mode)) {
 		reg = QCA8386_PORT_STATUS_LINK_AUTO;
@@ -804,7 +930,7 @@ static const struct dsa_switch_ops qca8386_switch_ops = {
 static int qca8386_sw_probe(struct mdio_device *mdiodev)
 {
 	struct qca8386_priv *priv;
-	int ret;
+	int ret, i;
 
 	priv = devm_kzalloc(&mdiodev->dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -815,6 +941,26 @@ static int qca8386_sw_probe(struct mdio_device *mdiodev)
 	priv->info = of_device_get_match_data(priv->dev);
 	if (!priv->info)
 		return -EINVAL;
+
+	/* Claimed here rather than in setup() so that we defer cleanly if the
+	 * nsscc clock/reset provider has not probed yet.
+	 */
+	for (i = 0; i < QCA8386_NUM_RESETS; i++)
+		priv->resets[i].id = qca8386_reset_names[i];
+
+	ret = devm_reset_control_bulk_get_exclusive(priv->dev, QCA8386_NUM_RESETS,
+						    priv->resets);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to get switch core/MAC resets\n");
+
+	for (i = 0; i < QCA8386_NUM_CLKS; i++)
+		priv->clks[i].id = qca8386_clk_names[i];
+
+	ret = devm_clk_bulk_get(priv->dev, QCA8386_NUM_CLKS, priv->clks);
+	if (ret)
+		return dev_err_probe(priv->dev, ret,
+				     "failed to get port datapath clocks\n");
 
 	/* The QCA8386 package reset (tlmm gpio24) is driven by the nsscc node
 	 * (qcom,qca8084-nsscc), which owns it exclusively and pulses it in its
@@ -873,6 +1019,8 @@ static void qca8386_sw_remove(struct mdio_device *mdiodev)
 		qca8386_port_set_status(priv, i, 0);
 
 	dsa_unregister_switch(priv->ds);
+
+	clk_bulk_disable_unprepare(QCA8386_NUM_CLKS, priv->clks);
 }
 
 static void qca8386_sw_shutdown(struct mdio_device *mdiodev)

@@ -221,6 +221,66 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
+		/* The switch core and each MAC port come out of the package
+		 * reset held in reset - their registers read back 0 and writes
+		 * are dropped. The vendor SSDK pulses exactly this set in
+		 * qca_mht_switch_reset() immediately before qca_switch_init().
+		 */
+		resets = <&qca8k_nsscc NSS_CC_SWITCH_CORE_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC0_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC0_RX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC1_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC1_RX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC2_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC2_RX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC3_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC3_RX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC4_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC4_RX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC5_TX_ARES>,
+			 <&qca8k_nsscc NSS_CC_MAC5_RX_ARES>;
+		reset-names = "switch_core",
+			      "mac0_tx", "mac0_rx",
+			      "mac1_tx", "mac1_rx",
+			      "mac2_tx", "mac2_rx",
+			      "mac3_tx", "mac3_rx",
+			      "mac4_tx", "mac4_rx",
+			      "mac5_tx", "mac5_rx";
+
+		/* Per-port datapath clocks. Nothing else claims these, so
+		 * clk_disable_unused() would otherwise gate them and no frame
+		 * would ever move. This is the switch-mode subset of the
+		 * vendor's ssdk_mht_gcc_clock_init(): MAC0 gets its SerDes
+		 * (UNIPHY1) clocks, the four user ports get their internal
+		 * GEPHY clocks. Four clocks per port, tx then rx - the driver
+		 * indexes them as port * 4.
+		 */
+		clocks = <&qca8k_nsscc NSS_CC_MAC0_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC0_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC0_TX_SRDS1_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC0_RX_SRDS1_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC1_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC1_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC1_GEPHY0_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC2_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC2_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC2_GEPHY1_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC3_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC3_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC3_GEPHY2_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC4_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC4_RX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_TX_CLK>,
+			 <&qca8k_nsscc NSS_CC_MAC4_GEPHY3_RX_CLK>;
+		clock-names = "mac0_tx", "mac0_rx", "mac0_tx_srds1", "mac0_rx_srds1",
+			      "mac1_tx", "mac1_rx", "mac1_gephy_tx", "mac1_gephy_rx",
+			      "mac2_tx", "mac2_rx", "mac2_gephy_tx", "mac2_gephy_rx",
+			      "mac3_tx", "mac3_rx", "mac3_gephy_tx", "mac3_gephy_rx",
+			      "mac4_tx", "mac4_rx", "mac4_gephy_tx", "mac4_gephy_rx";
+
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
