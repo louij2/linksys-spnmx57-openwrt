@@ -25,12 +25,13 @@ br-lan: port 1(eth0) entered forwarding state
   four EPHYs, and `lan1-4` DSA netdevs come up at the right speeds:
   `lan3: Link is Up - 2.5Gbps/Full`, `lan4: Link is Up - 1Gbps/Full`.
   (They are administratively down at boot until brought up / configured.)
-- 🔧 **Forwarding: root cause found, fix built.** Links are up but no frames
-  traverse - `eth0` (conduit) `rx_packets=0`, not even ARP. The same cable does a
-  13MB TFTP at 2.5G under U-Boot, so the physical path is fine. The switch core
-  reads back all zeros; see "the forwarding blocker" for the cause (switch-core
-  memory config, patch 0944) and for what has already been ruled out.
-- ⏳ then: router mode config, NAND flash, release
+- ✅ **FORWARDING WORKS** (2026-09-09). Root cause was the 32-bit MDIO register
+  decode, not clocks and not reset - see "the forwarding blocker".
+- ✅ **ROUTER MODE WORKS END TO END.** `wan` takes a DHCP lease from the upstream
+  LAN, the default route goes via `wan`, and the box pings `1.1.1.1` in 3.6 ms.
+  `lan1-3` bridge in `br-lan` on 192.168.1.1, `lan3` links and forwards at 2.5G
+  (0.8 ms RTT, ssh from a cabled host works), both wifi phys register.
+- ⏳ then: NAND flash, release
 
 ## The wifi fix (committed)
 
@@ -42,7 +43,58 @@ file: -12` and registers no phys. Adding spnmx57 to spnmx56's case arms
 now shows phy0+phy1 and both `cal-*.bin` are extracted. This also proves
 spnmx57 shares spnmx56's ART layout.
 
-## The forwarding blocker — root cause found (fix built, not yet HW-proven)
+## The forwarding blocker — SOLVED (2026-09-09)
+
+**It was the 32-bit MDIO register decode.** `qca8386.c` was forked from `qca8k`
+and inherited the QCA8337's addressing. The QCA8386 is addressed like the rest
+of the QCA8084 package:
+
+```
+                  qca8k (wrong here)   QCA8084 package (correct)
+  low register    (off >> 1) & 0x1e    off & 0x1f
+  high register   r1 + 1               r1 | BIT(1)
+  window/phy_id   (off >> 6) & 0x7     (off >> 5) & 0x7
+  page            (off >> 9) & 0x3ff   (off >> 8) & 0xffff
+```
+
+Ground truth: `__qca8084_mii_read()` / `__qca8084_set_page()` in
+`drivers/net/phy/qcom/qca808x.c`, which drive this same chip.
+
+**Offset 0 decodes identically under both schemes**, so `MASK_CTRL` returned a
+correct chip id (0x17 rev 0x00) the whole time while every other register read 0
+and every write was dropped - a 32-bit write emits the low half then the high
+half, and with `r1 + 1` aliasing onto `r1` the high half overwrites the low one.
+`FW_CTRL0` went from `0x00000000` to `0x001004f0` the moment this was fixed.
+
+**How it was found:** sweeping the switch core through the debugfs knob returned
+177 non-zero registers with plausible defaults - so the core was never dead -
+and *every value* was one 16-bit word duplicated into both halves
+(`0x17001700`, `0x52525252`, `0xc0a8c0a8`), the signature of reading the same
+MDIO register twice. **If you are ever back here: dump a range and look at the
+shape of the values before theorising about clocks or resets.**
+
+### The wan (port 4) follow-on, also solved
+
+With forwarding up, `lan3` passed traffic but `wan` sat at rx=0. `mac4_tx/rx`
+logged `rcg didn't update its configuration`: `__clk_rcg2_select_conf()` takes
+the first config whose parent gives an exact rate match, and
+`ftbl_nss_cc_mac4_tx_clk_src_125` lists `C(P_UNIPHY0_RX, 1)` *before*
+`C(P_UNIPHY1_TX312P5M, 2.5)`. Our DT advertised a 125MHz `uniphy0_rx` stub, so
+the RCG tried to source port 4 from UNIPHY0 - which does not run on this board
+(switch mode brings up UNIPHY1 only; the vendor even asserts SRDS0). Declaring
+the two UNIPHY0 stubs at **0 Hz** makes them unmatchable and the selector falls
+through to the parent the vendor mandates. wan rx 0 -> 134.
+
+### Kept but NOT proven necessary
+
+The switch-core reset (`NSS_CC_SWITCH_CORE_ARES` + MAC0..5) and the switch-core
+memory config (patch 0944, MEM_CTRL 0xc90f044 / MEM_ACC 0xc90f048) are both
+still in. The vendor does both. But both were tested against a driver that could
+not write a register, so neither has been shown to be required. If you want to
+slim the port down, these are the first two things to try removing - one at a
+time, with the `FW_CTRL0=` dmesg line as the check.
+
+## (historical) What the symptoms looked like before the decode fix
 
 **The whole switch core reads back zero.** The debugfs knob
 (`/sys/kernel/debug/90000.mdio-1:10/reg`, write a hex offset then read) showed:
@@ -129,6 +181,23 @@ Known flakiness the tool handles: the U-Boot autoboot window is short (retries),
 and the port needs a few seconds to link after a reboot before TFTP works
 (pings until the peer answers).
 
+**Trap that cost a cycle:** the harness fails with `peer never answered` if the
+*host* loses its route to the direct-cable subnet. On the Mac, `en18` held a
+static 192.168.1.10 **and** later picked up a DHCP lease from the upstream LAN
+(the switch bridges all ports whenever no OS is driving it, e.g. while sitting
+in U-Boot). macOS then reconfigured the interface and dropped the
+192.168.1.0/24 route, so `route -n get 192.168.1.1` resolved via the *default
+gateway* and TFTP replies never went down the cable - while `ping -b en18` still
+worked and made it look fine. Check `route -n get <box ip>` before blaming the
+board. Restore with:
+
+    sudo ifconfig en18 192.168.1.10 netmask 255.255.255.0 up
+
+A working fallback when that happens: the box's `wan` port is on the upstream
+LAN, so you can TFTP over that instead -
+`setenv ipaddr <free LAN ip>; setenv serverip <host LAN ip>; tftp 0x44000000 spnmx57.itb`
+(use `setenv` only, never `saveenv`).
+
 ## U-Boot facts (vendor U-Boot, prompt `IPQ5018#`)
 
 - Commands are `tftp` (NOT `tftpboot`), `bootm`, `nand read/write`, `printenv`.
@@ -158,3 +227,21 @@ and the port needs a few seconds to link after a reboot before TFTP works
   bakes a dangling `staging_dir/host/bin/python3` symlink; the container has 3.11.
 - Old-stack v0.4.0 (the shipped, working release) is a separate tree and is the
   fallback firmware on the other partition.
+
+## Measured on hardware (2026-09-09, new stack)
+
+| what | result |
+|---|---|
+| `lan3` link | 2.5 Gbps full, forwards, 0.8 ms RTT, ssh works |
+| `wan` link | 1 Gbps full, DHCP lease from upstream, default route |
+| internet | `ping 1.1.1.1` 3.6 ms from the box |
+| wifi | `phy0` + `phy1` register, both cal blobs extracted |
+| conduit `eth0` | 2.5 Gbps full, flow control rx/tx |
+| CPU-terminated throughput | ~293 Mbit/s single-stream HTTP to `/dev/null`, and
+  `sys` time was 9.4 s of 11.5 s - the A53 is the limit, there is no NSS offload
+  on this stack. Port-to-port switching is done in the switch hardware and does
+  not touch the CPU, so this number is **not** the front-panel switching rate.
+  A proper NAT/forwarding benchmark still needs a second cabled host. |
+| `rcg didn't update` warnings | 2, both `mac0` during early boot before the
+  SerDes is up; `mac0` ends up at the correct 312.5 MHz afterwards. Harmless
+  today, still worth silencing before a wide release. |
