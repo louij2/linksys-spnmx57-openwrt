@@ -338,3 +338,41 @@ and confirm `FW_CTRL0` is still non-zero and forwarding still works with them
 removed. That is a ten-second physical action and it is the only thing standing
 between this and dropping ~40 lines of driver code, 13 DT reset phandles and a
 whole patch. The code is restored and unchanged in the meantime.
+
+## WIFI VALIDATED ON HARDWARE (2026-09-09) — the last big unknown is closed
+
+Both radios were configured, enabled and a real client associated. Previously the
+radios only *registered*; nothing had ever connected.
+
+```
+phy0-ap0   SPNMX57-LAB      2.4 GHz  ch 1   HE20   (IPQ5018 built-in)
+phy1-ap0   SPNMX57-LAB-5G   5 GHz    ch 36  HE80   (QCN9074 on PCIe)
+br-lan members: lan1 lan2 lan3 phy0-ap0 phy1-ap0
+```
+
+Client on the 5 GHz radio:
+
+```
+signal -36 dBm, last ack -31 dBm
+tx/rx bitrate  1200.9 MBit/s  80MHz HE-MCS 11 HE-NSS 2
+tx retries 0, tx failed 0
+```
+
+`HE-MCS 11 / NSS 2 / 80MHz` is **WiFi 6 at the full 2x2 ceiling for this chain** —
+no fallback to legacy rates, no retries. Then end to end:
+
+```
+DHCP lease      192.168.4.231
+ping from box   3/3, 6.8 ms
+conntrack       425 flows from the client, NATed to the wan address
+                e.g. 192.168.4.231:54853 -> 142.250.129.156:443
+```
+
+So **phone -> wifi -> br-lan -> CPU -> NAT -> wan -> internet works**. The
+extender/router role is real, not theoretical.
+
+Caveat that still stands: wifi traffic crosses the CPU regardless, because the
+radios are not part of the DSA switch. Only wired-to-wired is hardware-switched.
+Wireless throughput is therefore CPU-bound and **still unmeasured** — the 1200
+Mbit/s figure above is the PHY rate, not achievable throughput. Do not quote it
+as such.
