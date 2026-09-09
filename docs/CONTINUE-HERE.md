@@ -31,7 +31,11 @@ br-lan: port 1(eth0) entered forwarding state
   LAN, the default route goes via `wan`, and the box pings `1.1.1.1` in 3.6 ms.
   `lan1-3` bridge in `br-lan` on 192.168.1.1, `lan3` links and forwards at 2.5G
   (0.8 ms RTT, ssh from a cabled host works), both wifi phys register.
-- ⏳ then: NAND flash, release
+- ✅ **FLASHED TO NAND AND PERSISTS.** `sysupgrade -n` writes partition 1
+  (`mtd12`/`mtd13`), U-Boot flips `boot_part` to 1, and a plain `reboot` comes
+  back up on `kernel-1` / `ubi0: attached mtd13` running 6.18.44 - it no longer
+  falls back to v0.4.0. **v0.4.0 is untouched on partition 2 as the fallback.**
+- ⏳ then: release notes, wider testing
 
 ## The wifi fix (committed)
 
@@ -271,3 +275,34 @@ the directory and running only `target/install` fails with the unhelpful
 **Always diff the image sha256 before and after a base-files change.** If it did
 not move, the change is not in the image, whatever the build log said. See also
 [[feedback_validate_dont_trust_exit_code]] — exit 0 here means nothing.
+
+## Release readiness (2026-09-09)
+
+**Working and verified on hardware, installed to NAND:**
+
+- Router mode end to end: `wan` DHCP lease, default route via `wan`,
+  `ping 1.1.1.1` = 3.6 ms from the box.
+- `lan1-3` in `br-lan` at 192.168.1.1; `lan3` links and forwards at 2.5 Gbps
+  (0.8 ms RTT, ssh from a cabled host).
+- `wan` at 1 Gbps, receiving and transmitting.
+- Conduit `eth0` at 2.5 Gbps full, flow control rx/tx.
+- Both wifi phys register and their cal blobs are extracted.
+- `sysupgrade` works, and the firmware survives reboots (see the bootcount fix).
+
+**Known gaps - be honest about these with testers:**
+
+1. **No NSS offload.** Traffic that terminates on or is routed by the CPU is
+   limited by the dual A53: ~293 Mbit/s single-stream, with `sys` time
+   dominating. Port-to-port switching is done in the switch hardware and is
+   unaffected, but **NAT throughput will be well below 2.5G**. Not yet measured
+   properly - that needs a second cabled host.
+2. **Two `rcg didn't update its configuration` warnings at boot**, both `mac0`,
+   before the SerDes is up. `mac0` lands on the correct 312.5 MHz afterwards, so
+   they are cosmetic today, but they should be silenced before a wide release.
+3. **`lan1` and `lan2` have never had anything plugged into them.** They link-detect
+   and are configured, but are untested with a real partner.
+4. **Wifi radios register but association was never tested** - they are disabled
+   by default like any OpenWrt build.
+5. The switch-core reset and patch 0944 are **unproven** (see above); they are
+   carried because the vendor does them.
+6. Only **one unit** has ever run this. The second unit is still on stock.
