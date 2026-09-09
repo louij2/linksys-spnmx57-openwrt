@@ -36,16 +36,32 @@
 		clock-frequency = <50000000>;
 	};
 
+	/* UNIPHY0/PCS0 is NOT used on this board: in switch mode the package
+	 * brings up UNIPHY1 only, and the vendor even asserts SRDS0 to save
+	 * power. Declare these at 0 Hz rather than the 125MHz they would carry
+	 * if they were running.
+	 *
+	 * This is load-bearing, not cosmetic. The nsscc binding takes all seven
+	 * clocks positionally so they cannot simply be omitted, and
+	 * __clk_rcg2_select_conf() picks the FIRST config whose parent yields an
+	 * exact rate match. ftbl_nss_cc_mac4_tx_clk_src_125 lists
+	 * C(P_UNIPHY0_RX, 1) ahead of C(P_UNIPHY1_TX312P5M, 2.5), so a 125MHz
+	 * stub here wins - and the RCG then tries to switch onto a SerDes that
+	 * is not toggling, times out in update_config(), and leaves port 4 (wan)
+	 * on the wrong clock. At 0 Hz these can never match, so the selector
+	 * falls through to UNIPHY1_TX312P5M/2.5, which is what the vendor's
+	 * ssdk_mht_gcc_port_clk_parent_set() mandates for port 4 in switch mode.
+	 */
 	qca8k_uniphy0_rx: clock-qca8k-uniphy0-rx {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
-		clock-frequency = <125000000>;
+		clock-frequency = <0>;
 	};
 
 	qca8k_uniphy0_tx: clock-qca8k-uniphy0-tx {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
-		clock-frequency = <125000000>;
+		clock-frequency = <0>;
 	};
 
 	qca8k_uniphy1_rx: clock-qca8k-uniphy1-rx {
