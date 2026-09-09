@@ -376,3 +376,50 @@ radios are not part of the DSA switch. Only wired-to-wired is hardware-switched.
 Wireless throughput is therefore CPU-bound and **still unmeasured** — the 1200
 Mbit/s figure above is the PHY rate, not achievable throughput. Do not quote it
 as such.
+
+## Measured throughput and the two settings that tripled it (2026-09-09)
+
+First real performance data, iPhone speedtest over WiFi 6 (HE80, 2x2), 1 Gbit
+uplink, device doing NAT:
+
+| config | down | up |
+|---|---|---|
+| stock defaults | 164 | 385 |
+| + software flow offloading | 257 | 444 |
+| + RPS across both cores | **485** | **474** |
+
+**+196% on download.** Note the baseline asymmetry (164 down vs 385 up) was the
+tell: download is the harder direction because it makes the router *transmit* on
+wifi and do the NAT work. Once both bottlenecks were removed the figures became
+symmetric, which is what you would expect from a link that is no longer
+CPU-starved.
+
+### 1. Software flow offloading — persistent, in `/etc/config/firewall`
+
+```
+uci set firewall.@defaults[0].flow_offloading='1'
+```
+
+Was **off**. Shortcuts established connections past the full netfilter path.
+Hardware offload (`flow_offloading_hw`) is NOT available - that needs NSS.
+Caveat: flow offloading bypasses per-packet handling, so it is incompatible with
+SQM/QoS shaping. If you ever want bufferbloat control here, they conflict.
+
+### 2. RPS — `/etc/hotplug.d/net/20-packet-steering`
+
+`IRQ 22 (eth0)` had **1,357,683 interrupts on cpu0 and exactly 0 on cpu1**: the
+conduit is single-queue, so one core did every packet while the other idled.
+
+**The uci option `network.globals.packet_steering` does nothing on this build.**
+`netifd` contains no `rps_cpus` code and no `packet_steering` string at all, so
+setting it is silently inert. Verified by grepping the binary. Hence the hotplug
+script, which is now shipped in base-files.
+
+RPS does not move the IRQ (that stays on cpu0, correctly) - it defers the softirq
+processing to the other core, which is exactly the win.
+
+### Still true
+
+Wifi traffic crosses the CPU regardless; only wired-to-wired is hardware
+switched. The 1200 Mbit/s in the station dump is a PHY rate, not throughput.
+Wired-to-wired switching throughput is still unmeasured - it needs a second host.
