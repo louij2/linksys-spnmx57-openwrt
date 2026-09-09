@@ -306,3 +306,35 @@ not move, the change is not in the image, whatever the build log said. See also
 5. The switch-core reset and patch 0944 are **unproven** (see above); they are
    carried because the vendor does them.
 6. Only **one unit** has ever run this. The second unit is still on stock.
+
+## Experiment 2026-09-09: are the reset and patch 0944 actually needed?
+
+Both were carried on "the vendor does it" grounds and explicitly flagged as
+unproven, because both were originally tested against a driver that could not
+write a register (the MDIO decode bug), so their apparent failure meant nothing.
+
+**Test:** disabled `reset_control_bulk_reset()` in `qca8386_setup()` AND removed
+patch 0944 from the patch set entirely. Built clean, RAM-booted.
+
+**Result: no observable difference.**
+
+```
+FW_CTRL0 = 0x001004f0        identical to the working build
+ping from a host on lan3     4/4, 0.755 ms
+wan DHCP lease               10.0.0.57/24
+ping 1.1.1.1 from the box    3/3, 3.48 ms
+counters                     eth0 rx 12480, lan3 rx 6129, wan rx 6279
+rcg warnings                 2, unchanged (the usual mac0 pair)
+```
+
+**NOT ACTED ON — the test has a hole.** This was a *warm* boot: the device had
+already been running the working firmware, so the switch could have been carrying
+configuration from the previous Linux boot that masks a genuinely required
+init step. A cold power-on presents the driver with a fresh chip and is the case
+that actually matters.
+
+**Gate before deleting either:** power the device fully off at the wall, back on,
+and confirm `FW_CTRL0` is still non-zero and forwarding still works with them
+removed. That is a ten-second physical action and it is the only thing standing
+between this and dropping ~40 lines of driver code, 13 DT reset phandles and a
+whole patch. The code is restored and unchanged in the meantime.
