@@ -158,9 +158,17 @@
 			 <&qca8k_nsscc NSS_CC_TLMM_CLK>,
 			 <&qca8k_nsscc NSS_CC_TLMM_AHB_CLK>,
 			 <&qca8k_nsscc NSS_CC_CNOC_AHB_CLK>,
-			 <&qca8k_nsscc NSS_CC_MDIO_AHB_CLK>;
+			 <&qca8k_nsscc NSS_CC_MDIO_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_MDIO_MASTER_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_SWITCH_CORE_CLK>;
+		/* switch_core and mdio_master_ahb MUST be claimed: the driver
+		 * looks up all nine, and any branch with no consumer is turned
+		 * off by clk_disable_unused() - which silently kills the switch
+		 * datapath in switch mode.
+		 */
 		clock-names = "apb_bridge", "ahb", "sec_ctrl_ahb",
-			      "tlmm", "tlmm_ahb", "cnoc_ahb", "mdio_ahb";
+			      "tlmm", "tlmm_ahb", "cnoc_ahb", "mdio_ahb",
+			      "mdio_master_ahb", "switch_core";
 		resets = <&qca8k_nsscc NSS_CC_GEPHY_FULL_ARES>;
 
 		qcom,package-mode = <QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_MAC>;
