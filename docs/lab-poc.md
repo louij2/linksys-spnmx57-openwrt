@@ -28,6 +28,30 @@ fine — every test below is local.
 `br-lan 192.168.1.1` and `lan1 lan2 lan3` bridged. You physically move its wan
 cable from the home LAN to unit 2's lan1 and it just works.
 
+## Why this port exists (context that should drive the test order)
+
+The stock ISP firmware **does not support bridge/AP mode at all**. That is the
+reason for the whole port: these units were supplied as range extenders, and the
+vendor firmware will not let them be dumb APs.
+
+That makes the **AP role the product**, not a post-PoC afterthought, and it
+changes what matters:
+
+- **Bridge offload (commit `c52d6b3`) is the critical feature here**, not a
+  nice-to-have. A dumb AP is pure L2 — every wired frame crosses the switch
+  fabric. Without offload each one is punted to the A53, bridged in software and
+  punted back.
+- **Wifi association has never been tested.** Both radios register and their cal
+  data extracts, but nothing has ever associated. For an extender this is the
+  single most important untested thing, ahead of every throughput number in this
+  document. Test it first.
+- **Wifi traffic still crosses the CPU.** The radios are not part of the DSA
+  switch, so wireless↔wired goes ath11k → bridge → conduit → switch. Only
+  wired↔wired is hardware-switched. An AP's wireless throughput is therefore
+  CPU-bound and currently unmeasured. Do not quote the ~293 Mbit/s figure for it:
+  that was traffic *terminating* on the box, which is more expensive than
+  forwarding, so it is a floor and not a prediction.
+
 ## What each test actually proves
 
 | test | path taken | proves |
@@ -123,10 +147,17 @@ iperf3 -c 192.168.2.1 -t 30
 
 ## Order of work
 
-1. Fix the Mac's tftpd and `en18` addressing (sudo).
-2. Attach UART to unit 2, flash it, confirm it boots. Riskiest step.
-3. Apply the "upstream" config to unit 2.
-4. Recable per the topology.
-5. Run the tests, record real numbers.
-6. Reconfigure unit 2 to the dumb-AP role and integrate both into the target
-   network.
+Reordered to put the actual product first.
+
+1. **Test wifi on unit 1, now, before any of the rest.** It needs no second unit
+   and no lab: configure an SSID, associate a phone or laptop, pass traffic. If
+   the radios do not work the extender role does not exist and everything below
+   is premature. This is the biggest open risk in the project.
+2. Fix the Mac's tftpd and `en18` addressing (sudo), or lose RAM-boot iteration
+   once the lab goes isolated.
+3. Attach UART to unit 2, flash it, confirm it boots. Riskiest step for hardware.
+4. Put unit 2 straight into the **dumb-AP** role and validate that, since it is
+   the end state. The "upstream" role below is only needed for the routed
+   throughput comparison.
+5. Recable per the topology, run the wired tests, record real numbers.
+6. Integrate into the home network or the Italy house.
