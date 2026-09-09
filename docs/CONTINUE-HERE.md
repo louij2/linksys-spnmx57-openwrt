@@ -262,7 +262,11 @@ sysupgrade.bin sha256 never changed from the broken one.
 Do this instead:
 
     rm -rf build_dir/target-*/root-<target>
-    make -j24 target/install
+    make -j24 package/install target/install
+
+`package/install` is required: it is what repopulates the staging root. Deleting
+the directory and running only `target/install` fails with the unhelpful
+`ERROR: target/linux failed to build.`
 
 **Always diff the image sha256 before and after a base-files change.** If it did
 not move, the change is not in the image, whatever the build log said. See also
