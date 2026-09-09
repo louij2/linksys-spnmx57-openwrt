@@ -179,19 +179,35 @@ struct qca8386_priv {
 	u8 switch_revision;
 };
 
-/* ---- 32-bit indirect MDIO (forked verbatim from qca8k, page reg 0x0c) --- */
+/* ---- 32-bit indirect MDIO ------------------------------------------------
+ *
+ * The QCA8386 is addressed like the rest of the QCA8084 package, NOT like the
+ * QCA8337 this driver was forked from. For a switch-core byte offset:
+ *
+ *   page    = (offset >> 8) & 0xffff  -> pseudo-PHY 0x18, reg 0x0c
+ *   phy_id  = 0x10 | ((offset >> 5) & 0x7)
+ *   reg     =  offset       & 0x1f    -> low 16 bits
+ *   reg | QCA8386_MII_REG_UPPER_16    -> high 16 bits
+ *
+ * qca8k halves the offset when computing the register and puts the upper half
+ * at reg + 1; both are wrong here. See __qca8084_mii_read()/__qca8084_set_page()
+ * in drivers/net/phy/qcom/qca808x.c, which drive this same chip.
+ *
+ * Getting this wrong is silent and very misleading: offset 0 decodes
+ * identically under both schemes, so MASK_CTRL reads back a perfectly correct
+ * chip ID while every other register reads 0 - and a write puts the low half
+ * and then the high half into the *same* register, so the high half clobbers
+ * the low one and nothing ever sticks.
+ */
+
+#define QCA8386_MII_REG_UPPER_16	BIT(1)
 
 static void
 qca8386_split_addr(u32 regaddr, u16 *r1, u16 *r2, u16 *page)
 {
-	regaddr >>= 1;
-	*r1 = regaddr & 0x1e;
-
-	regaddr >>= 5;
-	*r2 = regaddr & 0x7;
-
-	regaddr >>= 3;
-	*page = regaddr & 0x3ff;
+	*r1 = regaddr & 0x1f;
+	*r2 = (regaddr >> 5) & 0x7;
+	*page = (regaddr >> 8) & 0xffff;
 }
 
 static int
@@ -276,7 +292,8 @@ qca8386_mii_read32(struct mii_bus *bus, int phy_id, u32 regnum, u32 *val)
 	if (ret < 0)
 		goto err;
 
-	ret = qca8386_mii_read_hi(bus, phy_id, regnum + 1, &hi);
+	ret = qca8386_mii_read_hi(bus, phy_id,
+				  regnum | QCA8386_MII_REG_UPPER_16, &hi);
 	if (ret < 0)
 		goto err;
 
@@ -292,7 +309,8 @@ qca8386_mii_write32(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
 	if (qca8386_mii_write_lo(bus, phy_id, regnum, val) < 0)
 		return;
 
-	qca8386_mii_write_hi(bus, phy_id, regnum + 1, val);
+	qca8386_mii_write_hi(bus, phy_id,
+			     regnum | QCA8386_MII_REG_UPPER_16, val);
 }
 
 static int
