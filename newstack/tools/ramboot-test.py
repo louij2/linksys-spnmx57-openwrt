@@ -44,6 +44,20 @@ DEFAULTS = {
 }
 
 
+def read_for(p, seconds):
+    """Accumulate serial output for N seconds.
+
+    Do NOT sleep-then-read: the kernel's serial buffer is small and the tail of a
+    boot log is silently lost. Read continuously instead.
+    """
+    buf = b""
+    end = time.time() + seconds
+    while time.time() < end:
+        buf += p.read(4096)
+        time.sleep(0.05)
+    return buf.decode(errors="replace")
+
+
 def catch_uboot(p, attempts=3, window=45):
     """Reboot and interrupt autoboot. Returns True if we land at the prompt."""
     for attempt in range(1, attempts + 1):
@@ -105,8 +119,7 @@ def main():
     print(f"[*] tftp {args.image} -> {args.loadaddr}")
     p.reset_input_buffer()
     p.write(f"tftp {args.loadaddr} {args.image}\r".encode())
-    time.sleep(22)
-    out = p.read(60000).decode(errors="replace")
+    out = read_for(p, 25)
     if "Bytes transferred" not in out:
         print(out[-800:])
         sys.exit("TFTP failed - is the image in the TFTP root and the server up?")
@@ -115,8 +128,7 @@ def main():
 
     print("[*] bootm - booting from RAM (nothing written to flash)")
     p.write(f"bootm {args.loadaddr}\r".encode())
-    time.sleep(args.boot_wait)
-    boot = p.read(200000).decode(errors="replace")
+    boot = read_for(p, args.boot_wait)
     p.close()
 
     print("\n=== matched lines ===")
