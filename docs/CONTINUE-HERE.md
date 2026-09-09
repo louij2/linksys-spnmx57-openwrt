@@ -245,3 +245,25 @@ LAN, so you can TFTP over that instead -
 | `rcg didn't update` warnings | 2, both `mac0` during early boot before the
   SerDes is up; `mac0` ends up at the correct 312.5 MHz afterwards. Harmless
   today, still worth silencing before a wide release. |
+
+## Build trap: a changed base-files does NOT reach the image on its own
+
+Editing anything under `target/linux/<t>/<sub>/base-files/` (or
+`package/boot/uboot-tools/uboot-envtools/files/`) and then running
+`make target/install` produces a **byte-identical image**. The package rebuilds
+fine — `build_dir/target-*/linux-<t>_<sub>/base-files/.pkgdir/` shows the new
+content — but the assembled rootfs staging dir
+`build_dir/target-*/root-<target>` is *not* refreshed, so the image is built
+from the old files.
+
+This cost two full cycles here: the sysupgrade fix was "built" twice and the
+sysupgrade.bin sha256 never changed from the broken one.
+
+Do this instead:
+
+    rm -rf build_dir/target-*/root-<target>
+    make -j24 target/install
+
+**Always diff the image sha256 before and after a base-files change.** If it did
+not move, the change is not in the image, whatever the build log said. See also
+[[feedback_validate_dont_trust_exit_code]] — exit 0 here means nothing.
