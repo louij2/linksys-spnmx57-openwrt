@@ -9,15 +9,18 @@
  * 2.5G SGMII+ link and the switch bridges internally to the four EPHYs
  * (MDIO 1..4).
  *
- * This is a PHASE-2b SKELETON: the register-access layer (32-bit indirect
- * MDIO with the page written to pseudo-PHY 0x18 reg 0x0c) and chip
- * identification (device id 0x17) are the only reverse-engineering-confirmed
- * facts. It is forked from the mainline v6.18 qca8k driver
- * (drivers/net/dsa/qca/qca8k-8xxx.c + qca8k-common.c), dropping the internal
- * MDIO-master / eth-mgmt paths (the EPHYs are external QCA8084s on the SoC
- * mdio1 bus). The switch-core register offsets are assumed QCA8337-compatible
- * per the SSDK isisc register map but MUST be confirmed on hardware before the
- * full FDB/VLAN/PCS body is built out - see docs/phase2b-research/.
+ * Forked from the mainline v6.18 qca8k driver (drivers/net/dsa/qca/qca8k-8xxx.c
+ * + qca8k-common.c), dropping the internal MDIO-master / eth-mgmt paths: on this
+ * chip the four EPHYs are driven by the QCA8084 package driver on the same SoC
+ * mdio1 bus, not through the switch's own MDIO master.
+ *
+ * Confirmed on hardware: the 32-bit indirect MDIO access (page written to
+ * pseudo-PHY 0x18 reg 0x0c - the defining delta from qca8k, which uses reg 0),
+ * device id 0x17, and the CPU port linking to the SoC gmac1 conduit at 2.5G.
+ * The switch-core register offsets are QCA8337/isisc-compatible.
+ *
+ * Note: the NSS clock controller and the PHY package share this indirect MDIO
+ * window, so the page register must never be cached - see qca8386_set_page().
  *
  * Copyright (c) 2015, 2019, The Linux Foundation. All rights reserved.
  * Copyright (c) 2016 John Crispin <john@phrozen.org>
@@ -38,6 +41,7 @@
 #include <linux/phylink.h>
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
+#include <linux/if_bridge.h>
 
 /* ---- QCA8386 identity + indirect-MDIO access ---------------------------- */
 
@@ -123,11 +127,9 @@ struct qca8386_priv {
 	struct mii_bus *bus;
 	struct regmap *regmap;
 	struct dsa_switch *ds;
-	struct gpio_desc *reset_gpio;
 	const struct qca8386_info *info;
 
 	struct mutex reg_mutex;
-	u16 cached_page;
 	u8 switch_id;
 	u8 switch_revision;
 };
@@ -251,13 +253,19 @@ qca8386_mii_write32(struct mii_bus *bus, int phy_id, u32 regnum, u32 val)
 static int
 qca8386_set_page(struct qca8386_priv *priv, u16 page)
 {
-	u16 *cached_page = &priv->cached_page;
 	struct mii_bus *bus = priv->bus;
 	int ret;
 
-	if (page == *cached_page)
-		return 0;
-
+	/* Always write the page - do NOT cache it.
+	 *
+	 * qca8k caches the current page to save an MDIO write, which is safe
+	 * there because the switch owns its bus. Here the QCA8386's internal
+	 * NSS clock controller (nsscc-qca8k) and the QCA8084 PHY package sit
+	 * behind the SAME indirect window and write this very page register
+	 * without updating our cache. A cached page therefore goes stale the
+	 * moment nsscc touches the bus, and the next access would skip the
+	 * page write and read/write the WRONG page.
+	 */
 	/* THE defining QCA8386 delta: page register is 0x0c, not 0. */
 	ret = bus->write(bus, 0x18, QCA8386_MDIO_PAGE_REG, page);
 	if (ret < 0) {
@@ -266,7 +274,6 @@ qca8386_set_page(struct qca8386_priv *priv, u16 page)
 		return ret;
 	}
 
-	*cached_page = page;
 	usleep_range(1000, 2000);
 	return 0;
 }
@@ -482,6 +489,7 @@ qca8386_get_tag_protocol(struct dsa_switch *ds, int port,
 static int qca8386_setup(struct dsa_switch *ds)
 {
 	struct qca8386_priv *priv = ds->priv;
+	struct dsa_port *dp;
 	int ret;
 
 	/* Enable the CPU port. */
@@ -499,12 +507,60 @@ static int qca8386_setup(struct dsa_switch *ds)
 	if (ret)
 		return ret;
 
-	/* TODO(phase2c): MIB init, per-port lookup/forwarding, unknown-frame
-	 * flood-to-CPU, FDB flush, ageing, MAX_FRAME_SIZE, VLAN. These reuse
-	 * qca8k-common.c logic once the QCA8386 register map is confirmed on
-	 * hardware - see docs/phase2b-research/UNRESOLVED-CHECKLIST.md.
+	/* Start from a clean slate: no port forwards anywhere, and every user
+	 * port's MAC is off until DSA enables it.
 	 */
-	dev_info(priv->dev, "qca8386 skeleton setup complete (CPU port enabled)\n");
+	dsa_switch_for_each_port(dp, ds) {
+		ret = qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(dp->index),
+				  QCA8386_PORT_LOOKUP_MEMBER, 0);
+		if (ret)
+			return ret;
+	}
+
+	dsa_switch_for_each_user_port(dp, ds)
+		qca8386_port_set_status(priv, dp->index, 0);
+
+	/* Flood unknown unicast/multicast/broadcast/IGMP to the CPU port. */
+	ret = qca8386_write(priv, QCA8386_REG_GLOBAL_FW_CTRL1,
+			    FIELD_PREP(QCA8386_FW_CTRL1_IGMP_DP_MASK, dsa_cpu_ports(ds)) |
+			    FIELD_PREP(QCA8386_FW_CTRL1_BC_DP_MASK, dsa_cpu_ports(ds)) |
+			    FIELD_PREP(QCA8386_FW_CTRL1_MC_DP_MASK, dsa_cpu_ports(ds)) |
+			    FIELD_PREP(QCA8386_FW_CTRL1_UC_DP_MASK, dsa_cpu_ports(ds)));
+	if (ret)
+		return ret;
+
+	/* Standalone user ports: each one talks only to the CPU port, and the
+	 * CPU port is a member of each of them. Also give every port a default
+	 * egress VID so port-based VLAN behaves.
+	 */
+	dsa_switch_for_each_user_port(dp, ds) {
+		u8 port = dp->index, cpu_port = dp->cpu_dp->index;
+
+		ret = qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(port),
+				  QCA8386_PORT_LOOKUP_MEMBER, BIT(cpu_port));
+		if (ret)
+			return ret;
+
+		ret = qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(cpu_port),
+				  BIT(port), BIT(port));
+		if (ret)
+			return ret;
+
+		ret = qca8386_rmw(priv, QCA8386_EGRESS_VLAN(port),
+				  QCA8386_EGREES_VLAN_PORT_MASK(port),
+				  QCA8386_EGREES_VLAN_PORT(port, QCA8386_PORT_VID_DEF));
+		if (ret)
+			return ret;
+
+		ret = qca8386_write(priv, QCA8386_REG_PORT_VLAN_CTRL0(port),
+				    QCA8386_PORT_VLAN_CVID(QCA8386_PORT_VID_DEF) |
+				    QCA8386_PORT_VLAN_SVID(QCA8386_PORT_VID_DEF));
+		if (ret)
+			return ret;
+	}
+
+	dev_info(priv->dev, "qca8386 setup complete (CPU port + %d user ports)\n",
+		 QCA8386_NUM_PORTS - 1);
 
 	return 0;
 }
@@ -609,12 +665,60 @@ static const struct phylink_mac_ops qca8386_phylink_mac_ops = {
 	.mac_link_up	= qca8386_phylink_mac_link_up,
 };
 
+static int qca8386_port_enable(struct dsa_switch *ds, int port,
+			       struct phy_device *phy)
+{
+	qca8386_port_set_status(ds->priv, port, 1);
+
+	return 0;
+}
+
+static void qca8386_port_disable(struct dsa_switch *ds, int port)
+{
+	qca8386_port_set_status(ds->priv, port, 0);
+}
+
+/* DSA drives even a standalone user port to BR_STATE_FORWARDING on link-up
+ * through this op. Without it PORT_LOOKUP_STATE never leaves its reset value
+ * and the user ports stay silent even though their membership is set.
+ */
+static void qca8386_port_stp_state_set(struct dsa_switch *ds, int port, u8 state)
+{
+	struct qca8386_priv *priv = ds->priv;
+	u32 stp_state;
+
+	switch (state) {
+	case BR_STATE_DISABLED:
+		stp_state = QCA8386_PORT_LOOKUP_STATE_DISABLED;
+		break;
+	case BR_STATE_BLOCKING:
+		stp_state = QCA8386_PORT_LOOKUP_STATE_BLOCKING;
+		break;
+	case BR_STATE_LISTENING:
+		stp_state = QCA8386_PORT_LOOKUP_STATE_LISTENING;
+		break;
+	case BR_STATE_LEARNING:
+		stp_state = QCA8386_PORT_LOOKUP_STATE_LEARNING;
+		break;
+	case BR_STATE_FORWARDING:
+	default:
+		stp_state = QCA8386_PORT_LOOKUP_STATE_FORWARD;
+		break;
+	}
+
+	qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(port),
+		    QCA8386_PORT_LOOKUP_STATE_MASK, stp_state);
+}
+
 static const struct dsa_switch_ops qca8386_switch_ops = {
 	.get_tag_protocol	= qca8386_get_tag_protocol,
 	.setup			= qca8386_setup,
 	.phylink_get_caps	= qca8386_phylink_get_caps,
-	/* TODO(phase2c/2d): FDB/VLAN/bridge/STP/mirror/LAG/MTU/ethtool ops,
-	 * reused from qca8k-common.c once the register map is confirmed.
+	.port_enable		= qca8386_port_enable,
+	.port_disable		= qca8386_port_disable,
+	.port_stp_state_set	= qca8386_port_stp_state_set,
+	/* TODO: FDB/VLAN/bridge/mirror/LAG/MTU/ethtool ops, reusable from
+	 * qca8k-common.c now that the register map is confirmed compatible.
 	 */
 };
 
@@ -635,20 +739,11 @@ static int qca8386_sw_probe(struct mdio_device *mdiodev)
 	if (!priv->info)
 		return -EINVAL;
 
-	/* QCA8386 package reset (tlmm gpio24, active-low on SPNMX57).
-	 * TODO(phase2d): when the nsscc node is added it must be the SOLE
-	 * owner of this GPIO - drop this block then (see UNRESOLVED-CHECKLIST).
+	/* The QCA8386 package reset (tlmm gpio24) is driven by the nsscc node
+	 * (qcom,qca8084-nsscc), which owns it exclusively and pulses it in its
+	 * own probe. We must NOT request it here as well - the second
+	 * devm_gpiod_get() would fail with -EBUSY and take this driver down.
 	 */
-	priv->reset_gpio = devm_gpiod_get_optional(priv->dev, "reset",
-						   GPIOD_OUT_HIGH);
-	if (IS_ERR(priv->reset_gpio))
-		return PTR_ERR(priv->reset_gpio);
-
-	if (priv->reset_gpio) {
-		msleep(20);
-		gpiod_set_value_cansleep(priv->reset_gpio, 0);
-		msleep(50);
-	}
 
 	priv->regmap = devm_regmap_init(priv->dev, NULL, priv,
 					&qca8386_regmap_config);
@@ -658,7 +753,6 @@ static int qca8386_sw_probe(struct mdio_device *mdiodev)
 	}
 
 	mutex_init(&priv->reg_mutex);
-	priv->cached_page = 0xffff; /* invalidate the page cache */
 
 	ret = qca8386_read_switch_id(priv);
 	if (ret)

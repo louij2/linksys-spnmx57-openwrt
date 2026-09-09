@@ -4,6 +4,10 @@
 #include "ipq5018-ess.dtsi"
 #include "ipq5018-mx-base.dtsi"
 
+#include <dt-bindings/clock/qcom,qca8k-nsscc.h>
+#include <dt-bindings/reset/qcom,qca8k-nsscc.h>
+#include <dt-bindings/net/qcom,qca808x.h>
+
 / {
 	model = "Linksys SPNMX57";
 	compatible = "linksys,spnmx57", "qcom,ipq5018";
@@ -12,25 +16,73 @@
 		bootargs-append = " root=/dev/ubiblock0_0 coherent_pool=2M";
 		stdout-path = "serial0:115200n8";
 	};
+
+	/*
+	 * Clock inputs of the QCA8386's internal NSS clock controller.
+	 *
+	 * XO is a real 50 MHz reference. The uniphy rates are generated inside
+	 * the chip by the SerDes PLL (brought up over MDIO by the QCA8084
+	 * package/serdes driver); they are declared as fixed-clocks purely so
+	 * the CCF can select mux parents and compute RCG dividers.
+	 *
+	 * Load-bearing: XO (all GEPHY sys clocks derive from it, and it is the
+	 * only clock nss_cc_qca8k_probe() enables) and UNIPHY1_TX312P5M (the
+	 * switch_core/apb_bridge mux must reach 312.5 MHz, which the package
+	 * driver requests explicitly).
+	 */
+	qca8084_xo: clock-qca8084-xo {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <50000000>;
+	};
+
+	qca8k_uniphy0_rx: clock-qca8k-uniphy0-rx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <125000000>;
+	};
+
+	qca8k_uniphy0_tx: clock-qca8k-uniphy0-tx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <125000000>;
+	};
+
+	qca8k_uniphy1_rx: clock-qca8k-uniphy1-rx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <312500000>;
+	};
+
+	qca8k_uniphy1_tx: clock-qca8k-uniphy1-tx {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <312500000>;
+	};
+
+	qca8k_uniphy1_rx312p5m: clock-qca8k-uniphy1-rx312p5m {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <312500000>;
+	};
+
+	qca8k_uniphy1_tx312p5m: clock-qca8k-uniphy1-tx312p5m {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <312500000>;
+	};
 };
 
 /*
- * Phase 2b PROBE-TEST (new DSA stack).
+ * Phase 2d (new DSA stack): QCA8386 switch with its four integrated QCA8084
+ * 2.5G EPHYs exposed as lan1-4 DSA user ports.
  *
- * Ethernet is a QCA8386 ("Manhattan") switch integrating 4x QCA8084 2.5G
- * EPHYs, on gmac1 over SGMII+ 2.5G, driven by the new qca8386 DSA driver
- * (drivers/net/dsa/qca/qca8386.c). This wires ONLY the switch + CPU port so
- * the driver probes and reads chip id 0x17 over the indirect MDIO (page @
- * phy 0x18 reg 0x0c). The four QCA8084 user ports need the nsscc +
- * qcom,qca8084-package DT nodes (whose parent clocks currently lack an
- * in-tree provider - see docs/phase2b-research/UNRESOLVED-CHECKLIST.md) and
- * are deferred to Phase 2d.
+ * CPU port 0 uplinks to the SoC gmac1 at forced 2.5G SGMII+. The switch, the
+ * NSS clock controller and the PHY package all sit behind the same indirect
+ * MDIO window on mdio1 (page @ phy 0x18 reg 0x0c, data @ phy 0x10|r2).
  *
- * RUNTIME-UNVALIDATED: first bench iteration. Modelled on the working
- * ipq5018-spnmx56.dts (qca8337 DSA on this same SoC/stack). At the bench,
- * over UART, confirm the box boots and `dmesg | grep qca8386` shows the
- * "detected QCA8386 (id 0x17 ...)" line. gmac0/ge_phy are unused on this
- * board.
+ * gpio24 (the QCA8386 package reset) is owned SOLELY by the nsscc node - the
+ * switch node must not also claim it or the second devm_gpiod_get() gets -EBUSY.
  */
 
 &uniphy0 {
@@ -66,17 +118,100 @@
 	pinctrl-0 = <&mdio1_pins>;
 	pinctrl-names = "default";
 
+	/*
+	 * The QCA8386's internal NSS clock/reset controller. Clocks MUST be in
+	 * the driver's enum order (DT_XO first) and MUST NOT have clock-names:
+	 * nss_cc_qca8k_probe() does clk_get(dev, NULL), i.e. index 0 = XO.
+	 */
+	qca8k_nsscc: clock-controller@18 {
+		compatible = "qcom,qca8084-nsscc";
+		reg = <0x18>;
+		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+		#clock-cells = <1>;
+		#reset-cells = <1>;
+		#power-domain-cells = <1>;
+
+		clocks = <&qca8084_xo>,
+			 <&qca8k_uniphy0_rx>,
+			 <&qca8k_uniphy0_tx>,
+			 <&qca8k_uniphy1_rx>,
+			 <&qca8k_uniphy1_tx>,
+			 <&qca8k_uniphy1_rx312p5m>,
+			 <&qca8k_uniphy1_tx312p5m>;
+	};
+
+	/*
+	 * The four integrated QCA8084 EPHYs as a package. package-mode 1 is
+	 * switch mode (PCS1 SGMII MAC / PCS0 SGMII MAC), which is why there is
+	 * no xpcs-phy@7 and no qcom,xpcs-channel here - those are 10G-QXGMII
+	 * (mode 0) only.
+	 */
+	ethernet-phy-package@1 {
+		compatible = "qcom,qca8084-package";
+		reg = <1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		clocks = <&qca8k_nsscc NSS_CC_APB_BRIDGE_CLK>,
+			 <&qca8k_nsscc NSS_CC_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_SEC_CTRL_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_TLMM_CLK>,
+			 <&qca8k_nsscc NSS_CC_TLMM_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_CNOC_AHB_CLK>,
+			 <&qca8k_nsscc NSS_CC_MDIO_AHB_CLK>;
+		clock-names = "apb_bridge", "ahb", "sec_ctrl_ahb",
+			      "tlmm", "tlmm_ahb", "cnoc_ahb", "mdio_ahb";
+		resets = <&qca8k_nsscc NSS_CC_GEPHY_FULL_ARES>;
+
+		qcom,package-mode = <QCA808X_PCS1_SGMII_MAC_PCS0_SGMII_MAC>;
+		qcom,phy-addr-fixup = <1 2 3 4 5 6 7>;
+
+		ephy1: ethernet-phy@1 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <1>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY0_SYS_ARES>;
+		};
+
+		ephy2: ethernet-phy@2 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <2>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY1_SYS_ARES>;
+		};
+
+		ephy3: ethernet-phy@3 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <3>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY2_SYS_ARES>;
+		};
+
+		ephy4: ethernet-phy@4 {
+			compatible = "ethernet-phy-id004d.d180";
+			reg = <4>;
+			clocks = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_CLK>;
+			resets = <&qca8k_nsscc NSS_CC_GEPHY3_SYS_ARES>;
+		};
+
+		/* PCS1 SGMII+ carrying the MAC0 (CPU) uplink. */
+		pcs-phy@6 {
+			compatible = "qcom,qca8k-pcs-phy";
+			reg = <6>;
+			clocks = <&qca8k_nsscc NSS_CC_SRDS1_SYS_CLK>,
+				 <&qca8k_uniphy1_tx312p5m>,
+				 <&qca8k_uniphy1_rx312p5m>;
+			clock-names = "pcs", "pcs_rx_root", "pcs_tx_root";
+			resets = <&qca8k_nsscc NSS_CC_SRDS1_SYS_ARES>;
+		};
+	};
+
 	/* QCA8386 switch: register window at pseudo-PHY 0x10. */
 	switch@10 {
 		compatible = "qca,qca8386";
 		reg = <0x10>;
 		#address-cells = <1>;
 		#size-cells = <0>;
-
-		/* QCA8386 package reset (RE: tlmm gpio24, active-low). Sole
-		 * owner is this node until the nsscc node is added in phase2d.
-		 */
-		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
 
 		ports {
 			#address-cells = <1>;
@@ -93,14 +228,33 @@
 				};
 			};
 
-			/*
-			 * TODO(phase2d): user ports 1..4 -> the four QCA8084
-			 * EPHYs (phy-handle = <&ephyN>), which require the
-			 * qca8k_nsscc clock-controller and qcom,qca8084-package
-			 * nodes on this mdio1 bus. Omitted here so the probe
-			 * test does not depend on the nsscc parent-clock
-			 * providers that are not yet in-tree.
-			 */
+			port@1 {
+				reg = <1>;
+				label = "lan1";
+				phy-mode = "internal";
+				phy-handle = <&ephy1>;
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "lan2";
+				phy-mode = "internal";
+				phy-handle = <&ephy2>;
+			};
+
+			port@3 {
+				reg = <3>;
+				label = "lan3";
+				phy-mode = "internal";
+				phy-handle = <&ephy3>;
+			};
+
+			port@4 {
+				reg = <4>;
+				label = "lan4";
+				phy-mode = "internal";
+				phy-handle = <&ephy4>;
+			};
 		};
 	};
 };
