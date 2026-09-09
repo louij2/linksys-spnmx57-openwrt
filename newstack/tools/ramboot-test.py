@@ -19,7 +19,7 @@ host serving the image, and an ethernet cable from the host NIC to a device port
 
 Usage:
   ./ramboot-test.py                          # defaults below
-  ./ramboot-test.py --image spnmx57.itb --serverip 192.168.1.10
+  ./ramboot-test.py --image spnmx57.itb --serverip 192.168.4.10
   ./ramboot-test.py --grep 'eth0|qca8386|2500'
 """
 
@@ -38,7 +38,8 @@ DEFAULTS = {
     "dev": "/dev/cu.usbserial-110",
     "baud": 115200,
     "image": "spnmx57.itb",      # filename as served by the TFTP root
-    "serverip": "192.168.1.10",  # this host, on the direct-cable NIC
+    "ipaddr": "192.168.4.2",     # the box, in U-Boot only (Linux LAN is .1)
+    "serverip": "192.168.4.10",  # this host, on the direct-cable NIC
     "loadaddr": "0x44000000",
     "grep": r"eth0|gmac|2500|EINVAL|qca8386|DSA|Link is Up|lan[1-4]|validation|cannot attach|phy",
 }
@@ -108,10 +109,15 @@ def main():
     if not catch_uboot(p):
         sys.exit("could not reach U-Boot; power-cycle and retry")
 
+    # Set BOTH, and never rely on U-Boot's saved env: if a previous session (or
+    # a different lab layout) left ipaddr in another subnet, TFTP fails with a
+    # bare timeout and nothing says why. setenv only - never saveenv.
     p.reset_input_buffer()
-    p.write(f"setenv serverip {args.serverip}\r".encode())
-    time.sleep(0.6)
-    p.read(2000)
+    for var, val in (("ipaddr", args.ipaddr), ("serverip", args.serverip)):
+        p.write(f"setenv {var} {val}\r".encode())
+        time.sleep(0.6)
+        p.read(2000)
+    print(f"[*] U-Boot ipaddr={args.ipaddr} serverip={args.serverip}")
 
     if not wait_for_link(p, args.serverip):
         sys.exit("no link to the TFTP host")

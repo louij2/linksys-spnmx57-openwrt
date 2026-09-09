@@ -29,9 +29,10 @@ Verified in use across the estate on 2026-09-09 — do not reuse any of these:
 Also avoid the common defaults `192.168.8.0/24`, `192.168.10.0/24` and
 `192.168.100.0/24`, which turn up on modems and travel routers.
 
-The lab uses **`192.168.3.0/24`** for the upstream. Unit 1 keeps the OpenWrt
-default `192.168.1.0/24`, which is clear today — but it is a very common default,
-so if anything else in the house or the Italy property uses it, move unit 1 too.
+The lab uses **`192.168.3.0/24`** for the upstream and **`192.168.4.0/24`** for
+unit 1's LAN. Unit 1 was moved off the OpenWrt default `192.168.1.0/24` on
+2026-09-09: it is clear today, but it is the most-collided default on consumer
+kit and would have been a problem at the Italy install rather than here.
 
 ## Topology
 
@@ -42,14 +43,14 @@ so if anything else in the house or the Italy property uses it, move unit 1 too.
                               │
   SPNMX57 #1  "device under test"
     wan  ◄────────────────────┘     takes a DHCP lease from #2
-    br-lan 192.168.1.1/24, DHCP
+    br-lan 192.168.4.1/24, DHCP
     ├─ lan3 ── Mac                  (2.5G USB NIC)
     ├─ lan1 ── 2.5GbE unmanaged switch ── host B (second 2.5G endpoint)
     └─ lan2 ── spare
 ```
 
 **Unit 1 needs no configuration change.** It is already `wan: dhcp` with
-`br-lan 192.168.1.1` and `lan1 lan2 lan3` bridged. You physically move its wan
+`br-lan 192.168.4.1` and `lan1 lan2 lan3` bridged. You physically move its wan
 cable from the home LAN to unit 2's lan1 and it just works.
 
 ## Why this port exists (context that should drive the test order)
@@ -149,7 +150,7 @@ iperf3 -c <host B> -t 30 -P 4        # parallel streams
 
 # watch unit 1's CPU while the above runs - it should stay near idle.
 # if it does not, traffic is going through the CPU and offload is not working
-ssh root@192.168.1.1 'top -b -n2 -d5 | grep -E "^CPU|idle"'
+ssh root@192.168.4.1 'top -b -n2 -d5 | grep -E "^CPU|idle"'
 
 # NAT / routed path for comparison (expect far lower, CPU-bound)
 iperf3 -c 192.168.3.1 -t 30
