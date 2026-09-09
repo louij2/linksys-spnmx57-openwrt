@@ -1,0 +1,54 @@
+#!/bin/sh /etc/rc.common
+# Network performance tuning for the SPNMX57, complementing OpenWrt's own
+# packet steering rather than replacing it.
+#
+# This SoC has no NSS offload on the mainline DSA stack, so every routed or
+# wireless packet is handled by two Cortex-A53 cores. Two gaps are filled here.
+#
+# 1. THREADED NAPI on the conduit.
+#    /usr/libexec/network/packet-steering.uc is a scheduler that distributes
+#    NAPI *threads*. It does not create them and no uci option does. Threaded
+#    NAPI defaults to off here, so packet_steering=1 alone had nothing to place:
+#    measured on a fresh boot, eth0 rps_cpus=1 with every DSA port at 0, i.e.
+#    the whole datapath on cpu0 while cpu1 idled. Enabling threading lets
+#    upstream do its job - it then assigns napi/eth0-* to cpu0 and eth0
+#    rps_cpus to cpu1 by itself.
+#
+# 2. RPS ON THE DSA USER PORTS.
+#    Upstream manages the conduit and the wifi netdevs but never touches the
+#    DSA user ports, leaving them at rps_cpus=0. Verified that setting them
+#    SURVIVES a packet_steering reload, so this is additive, not a conflict.
+#
+# Measured, iPhone over WiFi 6, device doing NAT on a 1G uplink:
+#    stock defaults ............................ 164 down / 385 up
+#    + flow offloading ......................... 257 / 444
+#    + threaded NAPI, upstream steering ........ 342 / 424
+#    + RPS on the DSA user ports (this) ........ 385 / 512
+#
+# Do NOT hand-write rps_cpus for eth0 or the wifi netdevs: packet_steering owns
+# those and re-runs on interface events, so it would overwrite you.
+START=26
+
+apply_dsa_rps() {
+	local ncpu all i q
+	ncpu=$(grep -c ^processor /proc/cpuinfo)
+	[ "$ncpu" -gt 1 ] || return 0
+	all=$(( (1 << ncpu) - 1 ))
+	for i in /sys/class/net/lan* /sys/class/net/wan; do
+		[ -d "$i/queues" ] || continue
+		for q in "$i"/queues/rx-*; do
+			[ -w "$q/rps_cpus" ] && printf '%x' "$all" > "$q/rps_cpus"
+		done
+	done
+}
+
+boot() {
+	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,spnmx57" ] || return 0
+	[ "$(grep -c ^processor /proc/cpuinfo)" -gt 1 ] || return 0
+
+	# create the NAPI threads upstream wants to place, then let it place them
+	[ -w /sys/class/net/eth0/threaded ] && echo 1 > /sys/class/net/eth0/threaded
+	[ -x /etc/init.d/packet_steering ] && /etc/init.d/packet_steering reload
+
+	apply_dsa_rps
+}

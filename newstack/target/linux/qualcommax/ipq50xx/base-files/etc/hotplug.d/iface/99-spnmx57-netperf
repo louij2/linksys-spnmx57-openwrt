@@ -1,0 +1,7 @@
+#!/bin/sh
+# Re-apply DSA user-port RPS after interface events, which can reset queues.
+# See /etc/init.d/spnmx57-netperf for why and for the measurements.
+[ "$ACTION" = "ifup" ] || exit 0
+[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "linksys,spnmx57" ] || exit 0
+[ -x /etc/init.d/spnmx57-netperf ] && /etc/init.d/spnmx57-netperf boot >/dev/null 2>&1 &
+exit 0

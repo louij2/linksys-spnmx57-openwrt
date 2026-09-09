@@ -26,7 +26,7 @@ Verified on hardware, running from NAND on kernel 6.18.44:
 | `sysupgrade`, config persistence, reboot survival | ✅ |
 
 Measured, iPhone over Wi-Fi 6 (HE80 2×2) with the device doing NAT on a 1 G
-uplink: **485 Mbit/s down / 474 up**. See
+uplink: **385 Mbit/s down / 512 up** — up from 164/385 on stock defaults. See
 [Performance](#performance) — two settings account for a 3× difference and are
 now enabled by default.
 
@@ -63,17 +63,23 @@ throughput on the Wi-Fi path:
 
 1. **Software flow offloading** (`/etc/config/firewall`). Hardware offload needs
    NSS and is unavailable. Note it is incompatible with SQM/QoS shaping.
-2. **RPS packet steering** (`/etc/hotplug.d/net/20-packet-steering`). The conduit
-   is single-queue, so without it one core handled every packet while the other
-   idled — `IRQ 22` showed 1.36 M interrupts on cpu0 and **zero** on cpu1.
-   The uci option `network.globals.packet_steering` does **nothing** on this
-   build (netifd contains no `rps_cpus` code at all), hence the hotplug script.
+2. **Packet steering**, via `network.globals.packet_steering` plus
+   `/etc/init.d/spnmx57-netperf`. The conduit is single-queue, so without it one
+   core handles every packet while the other idles — `IRQ 22` showed 1.36 M
+   interrupts on cpu0 and **zero** on cpu1.
+
+   Two things are needed beyond setting the uci option, and both are shipped:
+   **threaded NAPI** on the conduit (OpenWrt's `packet-steering.uc` distributes
+   NAPI *threads*, but nothing creates them, so the option alone is a no-op
+   here), and **RPS on the DSA user ports**, which upstream never touches. All
+   CPU placement decisions are left to upstream.
 
 | config | down | up |
 |---|---|---|
-| stock defaults | 164 | 385 |
-| + flow offloading | 257 | 444 |
-| + RPS | **485** | **474** |
+| OpenWrt stock defaults | 164 | 385 |
+| + software flow offloading | 257 | 444 |
+| + threaded NAPI, upstream steering | 342 | 424 |
+| **+ RPS on the DSA user ports (shipped)** | **385** | **512** |
 
 ## How it was done
 
