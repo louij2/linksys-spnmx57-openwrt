@@ -783,6 +783,72 @@ static int qca8386_setup(struct dsa_switch *ds)
 	return 0;
 }
 
+/* Bridge offload.
+ *
+ * Without this the switch never learns that lan1..lanN are bridged: setup()
+ * leaves every user port a member of the CPU port only, so LAN-to-LAN frames
+ * are punted to the CPU, bridged in software and punted back - crossing the
+ * 2.5G conduit twice and capping port-to-port throughput at whatever the A53
+ * can forward. Joining the ports in the switch's own port-member mask keeps
+ * that traffic entirely inside the switch fabric.
+ */
+static int qca8386_update_port_member(struct qca8386_priv *priv, int port,
+				      const struct net_device *bridge_dev,
+				      bool join)
+{
+	struct dsa_port *dp = dsa_to_port(priv->ds, port), *other_dp;
+	u32 port_mask = BIT(dp->cpu_dp->index);
+	int i, ret;
+
+	for (i = 0; i < QCA8386_NUM_PORTS; i++) {
+		if (i == port || dsa_is_cpu_port(priv->ds, i))
+			continue;
+
+		other_dp = dsa_to_port(priv->ds, i);
+		if (!dsa_port_offloads_bridge_dev(other_dp, bridge_dev))
+			continue;
+
+		/* add/remove this port to/from the other port's member mask */
+		if (join) {
+			port_mask |= BIT(i);
+			ret = qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(i),
+					  BIT(port), BIT(port));
+		} else {
+			ret = qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(i),
+					  BIT(port), 0);
+		}
+		if (ret)
+			return ret;
+	}
+
+	/* and all the other bridged ports into this port's member mask */
+	return qca8386_rmw(priv, QCA8386_PORT_LOOKUP_CTRL(port),
+			   QCA8386_PORT_LOOKUP_MEMBER, port_mask);
+}
+
+static int qca8386_port_bridge_join(struct dsa_switch *ds, int port,
+				    struct dsa_bridge bridge,
+				    bool *tx_fwd_offload,
+				    struct netlink_ext_ack *extack)
+{
+	struct qca8386_priv *priv = ds->priv;
+
+	return qca8386_update_port_member(priv, port, bridge.dev, true);
+}
+
+static void qca8386_port_bridge_leave(struct dsa_switch *ds, int port,
+				      struct dsa_bridge bridge)
+{
+	struct qca8386_priv *priv = ds->priv;
+	int ret;
+
+	ret = qca8386_update_port_member(priv, port, bridge.dev, false);
+	if (ret)
+		dev_err(priv->dev,
+			"failed to update port member on bridge leave: %d\n",
+			ret);
+}
+
 static void qca8386_phylink_get_caps(struct dsa_switch *ds, int port,
 				     struct phylink_config *config)
 {
@@ -938,6 +1004,8 @@ static const struct dsa_switch_ops qca8386_switch_ops = {
 	.port_enable		= qca8386_port_enable,
 	.port_disable		= qca8386_port_disable,
 	.port_stp_state_set	= qca8386_port_stp_state_set,
+	.port_bridge_join	= qca8386_port_bridge_join,
+	.port_bridge_leave	= qca8386_port_bridge_leave,
 	/* TODO: FDB/VLAN/bridge/mirror/LAG/MTU/ethtool ops, reusable from
 	 * qca8k-common.c now that the register map is confirmed compatible.
 	 */
