@@ -42,6 +42,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/if_bridge.h>
+#include <linux/debugfs.h>
+#include <linux/uaccess.h>
 
 /* ---- QCA8386 identity + indirect-MDIO access ---------------------------- */
 
@@ -130,6 +132,8 @@ struct qca8386_priv {
 	const struct qca8386_info *info;
 
 	struct mutex reg_mutex;
+	struct dentry *debugfs;
+	u32 dbg_reg;
 	u8 switch_id;
 	u8 switch_revision;
 };
@@ -477,6 +481,79 @@ static void qca8386_port_set_status(struct qca8386_priv *priv, int port, int ena
 		qca8386_rmw(priv, QCA8386_REG_PORT_STATUS(port), mask, 0);
 }
 
+/* ---- debugfs register knob --------------------------------------------- */
+/*
+ * Bring-up aid: read/write switch registers live, e.g.
+ *   echo 0x660 > /sys/kernel/debug/qca8386/reg   # select
+ *   cat /sys/kernel/debug/qca8386/reg            # 0x00000660 = 0x........
+ *   echo "0x660 0x4d" > /sys/kernel/debug/qca8386/reg
+ * Without this the only way to check PORT_STATUS / PORT_LOOKUP_CTRL /
+ * GLOBAL_FW_CTRL is to guess from behaviour.
+ */
+static ssize_t qca8386_dbg_reg_write(struct file *file, const char __user *ubuf,
+				     size_t len, loff_t *ppos)
+{
+	struct qca8386_priv *priv = file->private_data;
+	char buf[32];
+	u32 addr, val;
+	int n;
+
+	if (len >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, len))
+		return -EFAULT;
+	buf[len] = '\0';
+
+	n = sscanf(buf, "%i %i", &addr, &val);
+	if (n < 1)
+		return -EINVAL;
+
+	if (n == 2) {
+		int ret = qca8386_write(priv, addr, val);
+
+		if (ret)
+			return ret;
+	}
+	priv->dbg_reg = addr;
+
+	return len;
+}
+
+static ssize_t qca8386_dbg_reg_read(struct file *file, char __user *ubuf,
+				    size_t len, loff_t *ppos)
+{
+	struct qca8386_priv *priv = file->private_data;
+	char buf[64];
+	u32 val = 0;
+	int ret, n;
+
+	ret = qca8386_read(priv, priv->dbg_reg, &val);
+	if (ret)
+		return ret;
+
+	n = scnprintf(buf, sizeof(buf), "0x%08x = 0x%08x\n", priv->dbg_reg, val);
+
+	return simple_read_from_buffer(ubuf, len, ppos, buf, n);
+}
+
+static const struct file_operations qca8386_dbg_reg_fops = {
+	.owner	= THIS_MODULE,
+	.open	= simple_open,
+	.read	= qca8386_dbg_reg_read,
+	.write	= qca8386_dbg_reg_write,
+	.llseek	= default_llseek,
+};
+
+static void qca8386_debugfs_init(struct qca8386_priv *priv)
+{
+	/* Device-unique name: a deferred re-probe must not collide with a
+	 * stale node from an earlier attempt.
+	 */
+	priv->debugfs = debugfs_create_dir(dev_name(priv->dev), NULL);
+	debugfs_create_file("reg", 0600, priv->debugfs, priv,
+			    &qca8386_dbg_reg_fops);
+}
+
 /* ---- DSA / phylink ops ------------------------------------------------- */
 
 static enum dsa_tag_protocol
@@ -770,7 +847,16 @@ static int qca8386_sw_probe(struct mdio_device *mdiodev)
 
 	dev_set_drvdata(priv->dev, priv);
 
-	return dsa_register_switch(priv->ds);
+	ret = dsa_register_switch(priv->ds);
+	if (ret)
+		return ret;
+
+	/* Only after the switch is live: on a deferred/failed probe devm frees
+	 * priv, and a debugfs file left pointing at it faults on the next read.
+	 */
+	qca8386_debugfs_init(priv);
+
+	return 0;
 }
 
 static void qca8386_sw_remove(struct mdio_device *mdiodev)
@@ -780,6 +866,8 @@ static void qca8386_sw_remove(struct mdio_device *mdiodev)
 
 	if (!priv)
 		return;
+
+	debugfs_remove_recursive(priv->debugfs);
 
 	for (i = 0; i < QCA8386_NUM_PORTS; i++)
 		qca8386_port_set_status(priv, i, 0);
