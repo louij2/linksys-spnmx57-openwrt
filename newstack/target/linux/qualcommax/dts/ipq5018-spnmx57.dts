@@ -249,9 +249,10 @@
 				phy-handle = <&ephy3>;
 			};
 
+			/* phy4 is the physical "Internet" socket on this board. */
 			port@4 {
 				reg = <4>;
-				label = "lan4";
+				label = "wan";
 				phy-mode = "internal";
 				phy-handle = <&ephy4>;
 			};
