@@ -1,5 +1,10 @@
 # Raw facts for a forum post — write it yourself, in your own words
 
+> **Status 2026-09-10: not posted, and not planned.** A generated post was flagged
+> by the community and removed by a moderator. Luca decided not to rewrite it: the
+> repo link is already in the existing threads, which was the whole point. This file
+> is kept as reference only. **Do not draft a replacement post.**
+
 The OpenWrt forum prohibits AI-generated technical content. This file is
 reference data only: verified numbers and findings from your own work, to write
 from. Do not paste it.
