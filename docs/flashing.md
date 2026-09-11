@@ -140,6 +140,19 @@ the `*.cgi` paths.
 That last row is the important one: this does not consume your way back. The
 vendor firmware is still in the other slot and `auto_recovery=yes` is intact.
 
+Measured timeline on the flash, sampled every 6 seconds from the attached
+machine:
+
+| | |
+|---|---|
+| `{"result": "OK"}` to link dropping | the write happens first, then it reboots |
+| link down to link back | **13 seconds** |
+| reboot to serving DHCP | **53 seconds** |
+| stability afterwards | solid, no wobble |
+
+Worth contrasting: the stock firmware on this same unit wedged its userspace
+within minutes of every single boot. OpenWrt did not.
+
 ### The one real hazard: the stock firmware wedges
 
 Repeatably, on every boot: the unit serves its pages for a few minutes, then
