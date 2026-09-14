@@ -205,18 +205,32 @@ an option (both slots damaged, or no network path to the device) — prefer
 > [!NOTE]
 > On the first unit opened, the console initially came up **read only** (the
 > adapter's TX never reached the router's RX), which was not enough to
-> interrupt autoboot. That has since been resolved and UART TFTP flashing has
-> been exercised successfully. If you hit the same symptom, double-check TX/RX
-> aren't swapped and that you have a solid ground connection before assuming
-> the header is dead.
+> interrupt autoboot. That has since been resolved, and the procedure below —
+> `tftp` the image into RAM, then flash it — has been exercised successfully
+> on a real unit. If you hit the read-only symptom, double-check TX/RX aren't
+> swapped and that you have a solid ground connection before assuming the
+> header is dead.
 
 ```
 setenv ipaddr <a free address on your LAN>
 setenv serverip <your TFTP server>
-tftp 0x44000000 factory.bin
+tftp 0x44000000 openwrt-...-initramfs-uImage.itb
+bootm 0x44000000
 ```
 
-Use `setenv`, never `saveenv`, so nothing persists if it goes wrong.
+Use `setenv`, never `saveenv`, so nothing persists if it goes wrong. This boots
+the image straight from RAM — nothing is written to flash yet, so a bad image
+costs you a power cycle, not a brick. Once it's up and reachable over the
+network, persist it the normal way from inside that booted OpenWrt session:
+
+```bash
+ssh root@<device> 'cat > /tmp/sysupgrade.bin' < openwrt-...-squashfs-sysupgrade.bin
+ssh root@<device> 'sysupgrade -n /tmp/sysupgrade.bin'
+```
+
+`newstack/tools/ramboot-test.py` automates the whole RAM-boot half of this
+loop and is what this port was actually developed against — see
+[Non-destructive testing](#non-destructive-testing) below.
 
 ### A trap when testing on a directly-attached machine
 
