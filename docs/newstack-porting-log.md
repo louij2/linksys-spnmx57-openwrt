@@ -313,7 +313,11 @@ not move, the change is not in the image, whatever the build log said. See also
    by default like any OpenWrt build.
 5. The switch-core reset and patch 0944 are **unproven** (see above); they are
    carried because the vendor does them.
-6. Only **one unit** has ever run this. The second unit is still on stock.
+6. ~~Only one unit has ever run this. The second unit is still on stock.~~
+   **CORRECTION, 2026-09-14:** the second unit was flashed straight from stock
+   on 2026-09-11, via the vendor's own hidden `fwupdate.html` page - no UART,
+   no case opening needed. See [flashing.md](flashing.md). Both units now run
+   this build.
 
 ## Experiment 2026-09-09: are the reset and patch 0944 actually needed?
 

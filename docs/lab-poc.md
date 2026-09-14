@@ -158,12 +158,17 @@ iperf3 -c 192.168.3.1 -t 30
 
 ## Blockers before this can be built
 
-1. **Unit 2 is on stock firmware and flashing it is an untested path.** Unit 1
-   reached OpenWrt via `sysupgrade` from an already-OpenWrt state. Unit 2 needs
-   `factory.bin` through the OEM web UI or TFTP recovery, which **nobody has done
-   on this device**. `docs/flashing.md` is explicit that factory.bin must never
-   go through sysupgrade. **Attach a UART to unit 2 before starting** — this is
-   the one step in the project that can actually lose hardware.
+> **Status update, 2026-09-14:** blockers 1 and the wifi item in "Order of
+> work" below are resolved. Stock-to-OpenWrt is proven and does **not** need
+> a UART — see [flashing.md](flashing.md#from-stock--proven-no-uart-no-case-opening).
+> Wifi is proven on hardware — see the main [README](../README.md#what-works).
+> Kept below for the addressing/topology plan, which is still accurate.
+
+1. ~~Unit 2 is on stock firmware and flashing it is an untested path.~~
+   **Resolved 2026-09-11**: `factory.bin` goes on through the vendor's own
+   hidden `fwupdate.html` page. No UART, no case opening, no TFTP recovery
+   needed - see [flashing.md](flashing.md). `docs/flashing.md` is still right
+   that `factory.bin` must never go through `sysupgrade`.
 2. **Going isolated costs the current TFTP path.** RAM-boot testing currently
    TFTPs over unit 1's wan to `arm` (10.0.0.249) on the home LAN. Once wan moves
    to unit 2 that route is gone. The Mac is on the lab network and could serve
@@ -180,13 +185,13 @@ iperf3 -c 192.168.3.1 -t 30
 
 Reordered to put the actual product first.
 
-1. **Test wifi on unit 1, now, before any of the rest.** It needs no second unit
-   and no lab: configure an SSID, associate a phone or laptop, pass traffic. If
-   the radios do not work the extender role does not exist and everything below
-   is premature. This is the biggest open risk in the project.
+1. ~~Test wifi on unit 1, now, before any of the rest.~~ **Done** - both
+   radios validated on hardware, see the main README.
 2. Fix the Mac's tftpd and `en18` addressing (sudo), or lose RAM-boot iteration
    once the lab goes isolated.
-3. Attach UART to unit 2, flash it, confirm it boots. Riskiest step for hardware.
+3. ~~Attach UART to unit 2, flash it, confirm it boots. Riskiest step for
+   hardware.~~ **Done, and no UART was needed** - `fwupdate.html` flashed it
+   from stock directly.
 4. Put unit 2 straight into the **dumb-AP** role and validate that, since it is
    the end state. The "upstream" role below is only needed for the routed
    throughput comparison.
