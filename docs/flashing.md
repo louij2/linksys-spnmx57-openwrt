@@ -119,6 +119,9 @@ the `*.cgi` paths.
    have run the setup wizard it is whatever you set there.
 5. Choose `...-squashfs-factory.bin`. **Not** `sysupgrade.bin` — the names differ
    by one word and they live in the same directory.
+
+   ![Choosing the factory.bin file on the fwupdate.html page](img/fwupdate-choose-factory-bin.png)
+
 6. Click **Update**. A successful upload returns exactly:
 
    ```json

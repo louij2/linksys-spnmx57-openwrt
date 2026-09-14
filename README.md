@@ -25,6 +25,9 @@ started this. On OpenWrt it does — plus per-port netdevs, real router mode, an
    self-signed certificate warning.
 5. Log in (factory-fresh default is `admin`; otherwise whatever you set in
    the setup wizard), choose the `factory.bin` you downloaded, click **Update**.
+
+   ![Choosing the factory.bin file on the fwupdate.html page](docs/img/fwupdate-choose-factory-bin.png)
+
 6. Leave it alone — it writes and reboots itself. About a minute later it
    comes up as OpenWrt on `192.168.1.1`, SSH open, no root password set.
 
