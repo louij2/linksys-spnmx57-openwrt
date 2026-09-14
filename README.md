@@ -10,8 +10,27 @@ started this. On OpenWrt it does — plus per-port netdevs, real router mode, an
 > [!IMPORTANT]
 > This is a personal port, not an official OpenWrt target. It has been proven
 > on **two units**, both flashed straight from stock, no case opening, no UART
-> needed — see [Install](#install). Read [docs/flashing.md](docs/flashing.md)
-> before you flash anything.
+> needed — see below. Read [docs/flashing.md](docs/flashing.md) for the full
+> picture (recovery, dual partitions, caveats) before you flash anything.
+
+## Quick start — flashing from stock
+
+1. **Download**, and check the hash:
+   - [`...-squashfs-factory.bin`](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest/download/openwrt-qualcommax-ipq50xx-linksys_spnmx57-squashfs-factory.bin) — this is the one you want, coming from stock
+   - [`sha256sums`](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest/download/sha256sums) — verify the download against this before flashing anything
+2. **Power cycle the router** (pull the mains lead, not a reboot) so it's freshly booted.
+3. Cable it **LAN port → your computer**, nothing else attached.
+4. Browse to **`https://<router-ip>/fwupdate.html`** — a hidden page Linksys
+   document themselves, not reachable from the normal admin UI. Accept the
+   self-signed certificate warning.
+5. Log in (factory-fresh default is `admin`; otherwise whatever you set in
+   the setup wizard), choose the `factory.bin` you downloaded, click **Update**.
+6. Leave it alone — it writes and reboots itself. About a minute later it
+   comes up as OpenWrt on `192.168.1.1`, SSH open, no root password set.
+
+No UART, no case opening, no signed firmware needed. Full detail, what to
+expect at each step, and the recovery path if anything goes sideways:
+**[docs/flashing.md](docs/flashing.md#from-stock--proven-no-uart-no-case-opening)**.
 
 ## What works
 
@@ -48,14 +67,15 @@ Be aware of these before you rely on it:
 
 ## Install
 
-Images are on the [Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases)
-page. **Read [docs/flashing.md](docs/flashing.md) first** — it covers the dual
-firmware partitions, the recovery path, and the UART pinout.
+Coming from **stock**? See [Quick start](#quick-start--flashing-from-stock)
+above.
 
-- Coming from **OpenWrt** → `...-squashfs-sysupgrade.bin` via `sysupgrade`
-- Coming from **stock** → `...-squashfs-factory.bin`, through the vendor's own
-  hidden `fwupdate.html` page. **Proven** — no case opening, no UART needed.
-  See [Flashing → From stock](docs/flashing.md#from-stock--proven-no-uart-no-case-opening).
+Already on **OpenWrt**? Grab
+[`...-squashfs-sysupgrade.bin`](https://github.com/louij2/linksys-spnmx57-openwrt/releases/latest/download/openwrt-qualcommax-ipq50xx-linksys_spnmx57-squashfs-sysupgrade.bin)
+and `sysupgrade` it. All images are on the
+[Releases](https://github.com/louij2/linksys-spnmx57-openwrt/releases) page —
+**read [docs/flashing.md](docs/flashing.md)** for the dual firmware
+partitions, the recovery path, and the UART pinout.
 
 Both the stock→OpenWrt path and a UART-based recovery flash have now been
 exercised on a second, separately-purchased unit.
