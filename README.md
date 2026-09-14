@@ -8,9 +8,10 @@ started this. On OpenWrt it does — plus per-port netdevs, real router mode, an
 2.5 Gbps on the front ports.
 
 > [!IMPORTANT]
-> This is a personal port, not an official OpenWrt target. It has been proven on
-> **one unit**. Read [docs/flashing.md](docs/flashing.md) before you flash
-> anything, and have a UART cable to hand.
+> This is a personal port, not an official OpenWrt target. It has been proven
+> on **two units**, both flashed straight from stock, no case opening, no UART
+> needed — see [Install](#install). Read [docs/flashing.md](docs/flashing.md)
+> before you flash anything.
 
 ## What works
 
@@ -39,7 +40,8 @@ Be aware of these before you rely on it:
   reach 2.5 Gbps.
 - **Wired-to-wired switching throughput is unmeasured.** It needs two 2.5 G
   hosts; the path is verified correct at the register level but has no number.
-- **One unit, one person.** No second unit has ever run this build.
+- **`lan1` and `lan2` have never had anything plugged into them.** They
+  link-detect and are configured, but are untested with a real partner.
 - Two cosmetic `rcg didn't update its configuration` warnings at boot (`mac0`,
   before the SerDes is up). Harmless; it settles on the correct rate.
 - LEDs, buttons and per-port LED offload are not wired up.
@@ -51,8 +53,12 @@ page. **Read [docs/flashing.md](docs/flashing.md) first** — it covers the dual
 firmware partitions, the recovery path, and the UART pinout.
 
 - Coming from **OpenWrt** → `...-squashfs-sysupgrade.bin` via `sysupgrade`
-- Coming from **stock** → `...-squashfs-factory.bin`. This path is
-  **not yet proven on this device**; do not attempt it without a UART attached.
+- Coming from **stock** → `...-squashfs-factory.bin`, through the vendor's own
+  hidden `fwupdate.html` page. **Proven** — no case opening, no UART needed.
+  See [Flashing → From stock](docs/flashing.md#from-stock--proven-no-uart-no-case-opening).
+
+Both the stock→OpenWrt path and a UART-based recovery flash have now been
+exercised on a second, separately-purchased unit.
 
 Always verify against the `sha256sums` file on the release.
 
@@ -85,7 +91,9 @@ throughput on the Wi-Fi path:
 
 The interesting part is the Ethernet. The QCA8386 switch had no DSA driver
 anywhere — not in OpenWrt, not in mainline — so one was written, forked from
-`qca8k`. Full write-up in [docs/CONTINUE-HERE.md](docs/CONTINUE-HERE.md).
+`qca8k`. Full write-up in [docs/newstack-porting-log.md](docs/newstack-porting-log.md),
+and the complete debugging story — including the earlier vendor-SSDK port that
+came before it — is indexed in **[docs/README.md](docs/README.md)**.
 
 The bug that cost the most: the driver inherited the **QCA8337's 32-bit MDIO
 register decode**. The QCA8386 is addressed like the rest of the QCA8084

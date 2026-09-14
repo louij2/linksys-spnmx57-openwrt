@@ -75,9 +75,9 @@ Note: IRQ staying on cpu0 is normal. RPS defers processing after the interrupt.
 
 ## Caveats to state honestly
 
-- One unit. Only yours has run this.
-- Stock -> OpenWrt untested. Yours arrived via sysupgrade from an existing
-  OpenWrt install. factory.bin is built but nobody has taken that path.
+- Two units now, both flashed clean from stock via the vendor's own hidden
+  `fwupdate.html` page - no UART, no case opening. A UART recovery flash has
+  also been exercised.
 - Wired-to-wired switching throughput unmeasured (needs two 2.5G hosts).
 - No LED or button support.
 - The "power cycle 4 times and it flips slots" auto-recovery does NOT apply:

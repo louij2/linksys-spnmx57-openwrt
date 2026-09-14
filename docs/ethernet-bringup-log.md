@@ -1,8 +1,18 @@
-# Handover: Linksys SPNMX57 OpenWrt Ethernet port
+# The ethernet bring-up log — old (qca-ssdk) stack
 
-Repo: `~/Repositories/linksys-spnmx57-openwrt` -> `github.com/louij2/linksys-spnmx57-openwrt` (public)
-Build host: `srv-openstack` (aarch64, 80 cores, 246 GB), tree `~/spnmx57/openwrt`, Docker image `owrt-deb12`.
-**Ghidra runs on srv-openstack, never on the Mac.** Device is at **10.0.0.71**.
+The full debugging journal for getting the QCA8386/QCA8084 line side working at
+all, on the original qca-ssdk-based port. Read [investigation.md](investigation.md)
+first for how the `-22` probe error was root-caused — this picks up right after
+that, working through the EPHY line side, the CPU-RX path, and the SoC-to-switch
+SGMII uplink, blow by blow, dead ends included.
+
+This stack has since been superseded — the shipping firmware today is the
+mainline DSA port, told in
+[newstack-porting-log.md](newstack-porting-log.md) — but every register found
+here, every dead end ruled out, and the debugging method itself (get the
+timestamp right before you bisect; dump a register range and look at the shape
+of the values, not just the number) carried straight over and is why the second
+port went far faster. Kept in full for that reason, not trimmed for length.
 
 ## Where things stand
 
@@ -1163,6 +1173,10 @@ line to 9600 — hold the fd open across the `stty` if scripting it.
   retired, all-ones guards, debugfs knob + post-ssdk re-samples, re-runnable
   preinit, calibration gated as the vendor gates it, reg 0x11 speed decode
 
-Luca wants, in order: **1G traffic end to end**, then a full write-up for the
-OpenWrt forum (someone has asked) and to share the DTS, then 2.5G.
-The repo goes private until 1G flows.
+## What happened next
+
+This is where the old-stack investigation stops. 1G traffic was confirmed
+end to end shortly after, the stack was frozen at that working point, and
+development moved to the mainline DSA rewrite covered in
+[newstack-porting-log.md](newstack-porting-log.md) — which is what ships
+today, including full 2.5G, both Wi-Fi radios, and router mode.

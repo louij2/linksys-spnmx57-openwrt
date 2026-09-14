@@ -1,9 +1,11 @@
 # Flashing the SPNMX57
 
 > [!NOTE]
-> This is an unofficial port, now proven on **two units**. Going from stock
-> firmware to OpenWrt **works and needs no UART and no case opening** — see
-> [From stock](#from-stock--proven-no-uart-no-case-opening). It flashes to the
+> This is an unofficial port, now proven on **two units**, via **two**
+> independent flashing paths: stock firmware to OpenWrt through the vendor's
+> own hidden `fwupdate.html` page (no UART, no case opening — see
+> [From stock](#from-stock--proven-no-uart-no-case-opening)), and recovery via
+> UART TFTP (see [Serial console](#serial-console)). Both write to the
 > inactive slot, so the vendor firmware survives in the other one.
 
 The original device-specific lab notes are kept at
@@ -193,12 +195,20 @@ verify with a made-up filename before reading anything into such a result. A
 `.html` path does return an honest `404`, which is how `fwupdate.html` was
 confirmed.
 
-### U-Boot TFTP, if you ever do need it
+### U-Boot TFTP — proven, as a recovery path
 
-Needs UART, and on the one unit opened so far the console was **read only** (the
-adapter's TX never reached the router's RX), which is not enough to interrupt
-autoboot. `bootdelay=3`, serial console only, no network console and no
-button-triggered recovery. Prefer `fwupdate.html`.
+Needs UART. `bootdelay=3`, serial console only, no network console and no
+button-triggered recovery. This is the fallback for when `fwupdate.html` isn't
+an option (both slots damaged, or no network path to the device) — prefer
+`fwupdate.html` for a routine flash.
+
+> [!NOTE]
+> On the first unit opened, the console initially came up **read only** (the
+> adapter's TX never reached the router's RX), which was not enough to
+> interrupt autoboot. That has since been resolved and UART TFTP flashing has
+> been exercised successfully. If you hit the same symptom, double-check TX/RX
+> aren't swapped and that you have a solid ground connection before assuming
+> the header is dead.
 
 ```
 setenv ipaddr <a free address on your LAN>

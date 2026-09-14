@@ -27,7 +27,7 @@ Reuses `ipq-wifi-linksys_spnmx56` caldata and the `Linksys-SPNMX56` calibration
 variant — the SPNMX57 shares the SPNMX56's ART layout, which the caldata fix
 proved.
 
-See `../docs/CONTINUE-HERE.md` for the full technical state and
+See `../docs/newstack-porting-log.md` for the full technical state and
 `../docs/NEWSTACK-PORT-PLAN.md` for the original plan.
 
 ## Reproducing the tested firmware

@@ -1,5 +1,13 @@
 # What is left to get OpenWrt fully working
 
+> **Status: historical.** Written when Ethernet was still an open question.
+> It has since been solved twice over — first on the vendor qca-ssdk stack
+> ([ethernet-bringup-log.md](ethernet-bringup-log.md)), then rewritten on
+> mainline DSA ([newstack-porting-log.md](newstack-porting-log.md)), which is
+> what ships today. Kept because the initial scoping below turned out to be
+> accurate — for what's *actually* still open now, see the main
+> [README](../README.md#what-does-not-work-or-is-untested).
+
 Written 2026-09-02, from the vendor device tree
 (`collected/vendor/vendor-palm15.dts`), mainline `ipq5018.dtsi`, and
 `ipq5018-mx-base.dtsi` from the fanchmwrt qualcommax tree. Everything below is

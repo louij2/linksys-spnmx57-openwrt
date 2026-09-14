@@ -1,9 +1,17 @@
-# CONTINUE HERE — SPNMX57 new-stack port (live state, 2026-09-09)
+# The mainline DSA port — how the shipping firmware was built
 
-Branch `newstack-port`. **Memory does not sync between machines — this file plus
-`docs/` is the context.** Also read: NEWSTACK-PORT-PLAN.md,
-NEWSTACK-QCA8386-DSA-DESIGN.md, NEWSTACK-PHASE2B-KIT.md,
-phase2b-research/UNRESOLVED-CHECKLIST.md, NEWSTACK-BENCH-PLAN.md.
+This is the technical log of the port that ships today: rewriting the ethernet
+path onto OpenWrt's mainline DSA stack instead of the vendor's qca-ssdk, and
+writing the first-ever QCA8386 switch driver to do it. It picks up after
+[the old-stack ethernet bring-up log](ethernet-bringup-log.md) — that
+investigation got 1G working via the vendor SSDK; this is the from-scratch
+rewrite that replaced it and now carries full 2.5G, both Wi-Fi radios, and
+router mode.
+
+The design work behind this is in
+[NEWSTACK-QCA8386-DSA-DESIGN.md](NEWSTACK-QCA8386-DSA-DESIGN.md) and the
+[phase2b-research/](phase2b-research/) register maps; this file is the
+narrative of actually bringing it up on hardware.
 
 ## Status: the 2.5G traffic path WORKS on hardware
 
